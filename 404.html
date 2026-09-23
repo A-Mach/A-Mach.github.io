@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lifestyle Designers Real Estate</title>
+<script>
+  /* GitHub Pages serves this file for any address it doesn't recognize as a
+     real file — which, for a single-page app, is every property/journal/
+     community address, since only one real HTML file exists. Rather than
+     show a dead end, encode the address the visitor actually wanted into a
+     query string and send them to the real page, which quietly restores it
+     (see the matching script at the top of index.html) before anyone
+     notices the detour. Standard technique for hosting a single-page app on
+     GitHub Pages specifically, since it has no server-side routing config. */
+  var real = location.pathname + location.search + location.hash;
+  location.replace('/?__redirect=' + encodeURIComponent(real));
+</script>
+</head>
+<body></body>
+</html>
