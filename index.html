@@ -73,7 +73,7 @@ p{margin:0 0 var(--s4)}
 .proto button:focus-visible{outline:2px solid #9B8BBC;outline-offset:2px}
 
 /* ============ header — context aware, always legible ============ */
-.hdr{position:fixed;top:1.9rem;left:0;right:0;z-index:150;
+.hdr{position:fixed;top:0;left:0;right:0;z-index:150;
   transition:background .55s var(--ease),border-color .55s var(--ease),color .55s var(--ease)}
 .hdr-in{max-width:var(--container);margin:0 auto;padding:var(--s4) var(--s5);
   display:flex;align-items:center;gap:var(--s6)}
@@ -631,21 +631,6 @@ input,select,textarea{width:100%;font-family:var(--sans);font-size:.9375rem;padd
 <script id="mcjs">!function(c,h,i,m,p){m=c.createElement(h),p=c.getElementsByTagName(h)[0],m.async=1,m.src=i,p.parentNode.insertBefore(m,p)}(document,"script","https://chimpstatic.com/mcjs-connected/js/users/ee3754c92fe7b13947bcb783a/878308b110602e409c166aa9f.js");</script>
 </head>
 <body>
-
-<div class="proto">
-  <b>V2.1</b>
-  <div class="proto-group"><span>Atmosphere</span>
-    <button data-pal="a" aria-pressed="false">A Neutral</button>
-    <button data-pal="b" aria-pressed="false">B PR Modern</button>
-    <button data-pal="c" aria-pressed="true">C Editorial</button>
-  </div>
-  <div class="sp"></div>
-  <div class="proto-group" role="tablist">
-    <button role="tab" aria-selected="true" data-page="home">Homepage</button>
-    <button role="tab" aria-selected="false" data-page="property">Property</button>
-    <button role="tab" aria-selected="false" data-page="cristina">Cristina</button>
-  </div>
-</div>
 
 <header class="hdr dark" id="hdr">
   <div class="hdr-in">
