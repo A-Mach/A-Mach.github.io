@@ -548,10 +548,10 @@ body.tour-open{overflow:hidden}
   .idx{grid-template-columns:1fr}
   .idx-preview{display:none}
   .idx-row{grid-template-columns:9rem 1fr;gap:var(--s5);align-items:start}
-  .idx-thumb{display:block;width:9rem;aspect-ratio:3/4;object-fit:cover}
+  .idx-thumb{display:block;width:calc(9rem - .6rem);aspect-ratio:3/4;object-fit:cover;margin-left:.6rem}
   .idx-price{grid-column:2;margin-top:var(--s3)}
 }
-@media(max-width:560px){.idx-row{grid-template-columns:6rem 1fr}.idx-thumb{width:6rem}}
+@media(max-width:560px){.idx-row{grid-template-columns:6rem 1fr}.idx-thumb{width:calc(6rem - .5rem);margin-left:.5rem}}
 
 /* ============ forms ============ */
 .form{border:1px solid var(--rule);background:var(--deep);padding:var(--s7)}
@@ -628,6 +628,7 @@ input,select,textarea{width:100%;font-family:var(--sans);font-size:.9375rem;padd
   .arrival{position:static;height:80vh}
 }
 </style>
+<script id="mcjs">!function(c,h,i,m,p){m=c.createElement(h),p=c.getElementsByTagName(h)[0],m.async=1,m.src=i,p.parentNode.insertBefore(m,p)}(document,"script","https://chimpstatic.com/mcjs-connected/js/users/ee3754c92fe7b13947bcb783a/878308b110602e409c166aa9f.js");</script>
 </head>
 <body>
 
