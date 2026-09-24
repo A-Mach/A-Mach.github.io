@@ -547,11 +547,12 @@ body.tour-open{overflow:hidden}
 @media(max-width:1000px){
   .idx{grid-template-columns:1fr}
   .idx-preview{display:none}
-  .idx-row{grid-template-columns:9rem 1fr;gap:var(--s5);align-items:start}
-  .idx-thumb{display:block;width:calc(9rem - .6rem);aspect-ratio:3/4;object-fit:cover;margin-left:.6rem}
+  .idx-row{grid-template-columns:9rem 1fr;gap:var(--s5);align-items:start;padding-left:var(--s4);padding-right:var(--s4)}
+  .idx-group-label{padding-left:var(--s4)}
+  .idx-thumb{display:block;width:9rem;aspect-ratio:3/4;object-fit:cover}
   .idx-price{grid-column:2;margin-top:var(--s3)}
 }
-@media(max-width:560px){.idx-row{grid-template-columns:6rem 1fr}.idx-thumb{width:calc(6rem - .5rem);margin-left:.5rem}}
+@media(max-width:560px){.idx-row{grid-template-columns:6rem 1fr}.idx-thumb{width:6rem}}
 
 /* ============ forms ============ */
 .form{border:1px solid var(--rule);background:var(--deep);padding:var(--s7)}
@@ -566,8 +567,13 @@ input,select,textarea{width:100%;font-family:var(--sans);font-size:.9375rem;padd
 @media(max-width:560px){.agent{flex-direction:column;align-items:flex-start}}
 
 /* ============ cristina ============ */
-.quote-stage{position:relative;min-height:115vh}
-.quote-sticky{position:sticky;top:0;height:100vh;display:grid;place-items:center}
+.quote-stage{position:relative}
+.quote-sticky{position:static;padding:var(--s10) 0 var(--s8);display:grid;place-items:center}
+.mvv{padding:var(--s11) 0}
+.mvv-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--s8) var(--s7);margin-top:var(--s9)}
+.mvv-grid h3{font-family:var(--sans);font-size:.78rem;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin:0 0 var(--s4)}
+.mvv-grid p{font-size:clamp(1.3rem,2.1vw,1.75rem);line-height:1.3;font-weight:300;margin:0}
+@media(max-width:880px){.mvv-grid{grid-template-columns:1fr}.mvv{padding:var(--s10) 0}}
 .quote-sticky blockquote{margin:0;padding:0 var(--s5);max-width:19ch;text-align:center;
   font-size:clamp(1.9rem,5.5vw,4.5rem);line-height:1.06;font-weight:200;font-style:italic}
 .varlist{list-style:none;margin:0;padding:0;border-top:1px solid var(--rule);max-width:34rem}
@@ -592,7 +598,7 @@ input,select,textarea{width:100%;font-family:var(--sans);font-size:.9375rem;padd
 @media(max-width:520px){.ftr-grid{grid-template-columns:1fr}}
 .ftr h4{font-family:var(--sans);font-size:.72rem;font-weight:500;color:var(--muted);margin:0 0 var(--s4)}
 .ftr ul{list-style:none;margin:0;padding:0;display:grid;gap:var(--s3);font-family:var(--sans);font-size:.875rem}
-.ftr .logo img{height:32px}
+.ftr .logo img{height:32px;filter:brightness(0)}
 .ftr-base{border-top:1px solid var(--rule);margin-top:var(--s8);padding-top:var(--s5);
   font-family:var(--sans);font-size:.72rem;color:var(--muted);display:flex;justify-content:space-between;flex-wrap:wrap;gap:var(--s4)}
 
@@ -1165,6 +1171,17 @@ input,select,textarea{width:100%;font-family:var(--sans);font-size:.9375rem;padd
     </div>
   </section>
 
+  <section class="deep-sec mvv" data-tone="light">
+    <div class="wrap">
+      <div class="shead"><h2>Mission, vision and values</h2></div>
+      <div class="mvv-grid">
+        <div><h3>Mission</h3><p>To offer personalized service in Puerto Rico's luxury real estate market.</p></div>
+        <div><h3>Vision</h3><p>To redefine real estate through lifestyle design, ensuring every client finds a home that aligns with their way of life.</p></div>
+        <div><h3>Values</h3><p>Integrity, empathy, and innovation. Meaningful connections, understanding client needs, tailored solutions.</p></div>
+      </div>
+    </div>
+  </section>
+
   <section class="wrap band" data-tone="light">
     <div class="shead"><h2>How she defines a lifestyle</h2></div>
     <div class="measure"><p class="lede">"Lifestyle" is abstract until it is made specific. Cristina works through the same considerations with every client, in her own published words.</p></div>
@@ -1173,17 +1190,6 @@ input,select,textarea{width:100%;font-family:var(--sans);font-size:.9375rem;padd
       <li>Cleanliness</li><li>Spaciousness</li><li>Profitability</li>
     </ul>
     <p class="meta" style="margin-top:var(--s7)">Her completed transactions span Dorado Beach Resort, Condado, Guaynabo, Río Grande and beyond. <a class="tlink" href="#" data-page="sold-leased">See the record</a></p>
-  </section>
-
-  <section class="deep-sec band" data-tone="light">
-    <div class="wrap">
-      <div class="shead"><h2>Mission, vision and values</h2></div>
-      <div class="grid3">
-        <div><h3>Mission</h3><p style="margin-top:var(--s4)">To offer personalized service in Puerto Rico's luxury real estate market.</p></div>
-        <div><h3>Vision</h3><p style="margin-top:var(--s4)">To redefine real estate through lifestyle design, ensuring every client finds a home that aligns with their way of life.</p></div>
-        <div><h3>Values</h3><p style="margin-top:var(--s4)">Integrity, empathy, and innovation. Meaningful connections, understanding client needs, tailored solutions.</p></div>
-      </div>
-    </div>
   </section>
 
   <section class="dark-sec band" data-tone="dark">
@@ -1571,6 +1577,7 @@ input,select,textarea{width:100%;font-family:var(--sans);font-size:.9375rem;padd
   <section class="band" style="padding-top:var(--s11)" data-tone="light">
     <div class="wrap">
       <div class="measure">
+        <p style="margin-bottom:var(--s6)"><a class="tlink" href="#" data-page="home" data-scroll-to="journal">← All journal entries</a></p>
         <p class="meta" id="jpDate"></p>
         <h1 id="jpTitle" style="margin-top:var(--s3)"></h1>
         <p id="jpLangToggle" hidden style="margin-top:var(--s5)">
@@ -2016,6 +2023,9 @@ input,select,textarea{width:100%;font-family:var(--sans);font-size:.9375rem;padd
      journal row, or a deep link/back-forward). push=false is used only for
      the very first load of a page already implied by the URL, and for
      popstate (the browser already moved history itself there). */
+  var lastScrollY = 0;
+  window.addEventListener('scroll', function(){ lastScrollY = window.pageYOffset; }, { passive:true });
+  document.addEventListener('click', function(){ lastScrollY = window.pageYOffset; }, true);
   function syncURL(pageKey, slug, push){
     try{
       document.title = titleFor(pageKey, slug);
@@ -2024,6 +2034,7 @@ input,select,textarea{width:100%;font-family:var(--sans);font-size:.9375rem;padd
       if(push === false){
         if(location.pathname !== path) history.replaceState(state, '', path);
       } else if(location.pathname !== path){
+        history.replaceState(Object.assign({}, history.state, { y: lastScrollY }), '');
         history.pushState(state, '', path);
       }
     } catch(e){}
@@ -4070,7 +4081,15 @@ input,select,textarea{width:100%;font-family:var(--sans);font-size:.9375rem;padd
      than instantly — name/price/status/photo come from the page's own
      static fallback and are correct immediately either way. */
   if(location.pathname !== '/'){ renderFromPath(location.pathname, false); }
-  window.addEventListener('popstate', function(){ renderFromPath(location.pathname, false); });
+  window.addEventListener('popstate', function(){
+    var y = history.state && history.state.y;
+    renderFromPath(location.pathname, false);
+    if(typeof y === 'number'){
+      window.scrollTo(0, y);
+      requestAnimationFrame(function(){ window.scrollTo(0, y); });
+    }
+  });
+  try{ history.scrollRestoration = 'manual'; }catch(e){}
 
   /* Inquiry forms — real, working, and backend-free.
      There is no server behind this prototype, so rather than leave the send
