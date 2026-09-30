@@ -4278,6 +4278,29 @@ main:focus{outline:none}
     } catch(e){ return false; }
   }
 
+
+  /* the photographic texture library: the files are fetched (and cached by the browser) before the house is
+     built. LDRE_TEXLIB may already be filled (the standalone page carries the files inside itself), and a
+     file that fails to load simply leaves that surface on its drawn texture. */
+  var TEX_FILES = ['Tiles139','Concrete034','Plaster002','Wood094','Wood060','Marble021','Marble025','Concrete030','Concrete042A','Fabric062'];
+  function preloadTexLib(done){
+    var lib = window.LDRE_TEXLIB = window.LDRE_TEXLIB || {};
+    var base = window.LDRE_TEX_BASE || '3d-standalone/tex/', data = window.LDRE_TEX_DATA || null;
+    var jobs = [];
+    TEX_FILES.forEach(function(id){ ['c','n','r'].forEach(function(k){ jobs.push(id + '_' + k); }); });
+    var left = jobs.length, finished = false;
+    function one(){ if(--left === 0) fin(); }
+    function fin(){ if(finished) return; finished = true; done(); }
+    setTimeout(fin, 15000);
+    jobs.forEach(function(name){
+      if(lib[name]){ one(); return; }
+      var im = new Image();
+      im.onload = function(){ lib[name] = im; one(); };
+      im.onerror = function(){ one(); };
+      im.src = data && data[name] ? data[name] : base + name + '.jpg';
+    });
+  }
+
   function loadThree(done){
     if(threeState === 'ready')  return done(true);
     if(threeState === 'failed') return done(false);
@@ -4360,6 +4383,55 @@ main:focus{outline:none}
 
     /* ============ texture factory ============ */
     var texCache = {};
+
+    /* ---- the shared photographic texture library ----
+       A few CC0 photographic texture sets (ambientCG), stored once as small JPEG files and reused by every
+       property model: the browser downloads and caches them once. They are loaded BEFORE the house is built
+       (see preloadTexLib), so the lighting bake sees the real surfaces. If a file cannot be loaded the
+       matching drawn texture is used instead, so the model still opens. */
+    var TEXLIB = window.LDRE_TEXLIB || {};
+    var LIB_MEAN = {
+      Tiles139: [180,159,138], Concrete034: [184,184,184], Plaster002: [217,213,210], Wood094: [167,131,100],
+      Wood060: [102,68,49], Marble021: [244,242,240], Marble025: [215,215,215], Concrete030: [100,96,92], Concrete042A: [97,93,89], Fabric062: [185,179,170]
+    };
+    function srgbLin(v){ v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }
+    function libTex(id, kind, rx, ry, srgb, rot, soften){
+      var im = TEXLIB[id + '_' + kind];
+      if(!im) return null;
+      if(soften){
+        /* a photograph of plaster has more mottling than a painted white wall: blend it toward its own average */
+        var cv = document.createElement('canvas'); cv.width = im.width; cv.height = im.height;
+        var cx = cv.getContext('2d'), m = LIB_MEAN[id];
+        cx.fillStyle = 'rgb(' + m[0] + ',' + m[1] + ',' + m[2] + ')'; cx.fillRect(0, 0, cv.width, cv.height);
+        cx.globalAlpha = 1 - soften; cx.drawImage(im, 0, 0);
+        im = cv;
+      }
+      if(lowPower && im.width > 512){
+        /* phones: the colour pictures are used at half size (a quarter of the graphics memory) */
+        var sm = document.createElement('canvas'); sm.width = sm.height = 512;
+        sm.getContext('2d').drawImage(im, 0, 0, 512, 512);
+        im = sm;
+      }
+      var t = new T.Texture(im);
+      t.wrapS = t.wrapT = T.RepeatWrapping;
+      t.repeat.set(rx, ry);
+      if(rot){ t.center.set(0.5, 0.5); t.rotation = rot; }
+      t.anisotropy = maxAniso;
+      if(srgb && T.sRGBEncoding) t.encoding = T.sRGBEncoding;
+      t.needsUpdate = true;
+      return t;
+    }
+    /* target = the average colour (sRGB) the surface had before, so the lighting balance of the house is kept */
+    function libOrTex(id, rx, ry, target, normalScale, rot, fallback, soften){
+      var c = libTex(id, 'c', rx, ry, true, rot, soften);
+      if(!c) return fallback();
+      var m = LIB_MEAN[id];
+      c.lib = {
+        n: libTex(id, 'n', rx, ry, false, rot), r: libTex(id, 'r', rx, ry, false, rot), ns: normalScale,
+        tint: new T.Color(srgbLin(target[0]) / srgbLin(m[0]), srgbLin(target[1]) / srgbLin(m[1]), srgbLin(target[2]) / srgbLin(m[2]))
+      };
+      return c;
+    }
     /* Every surface in this scene is drawn by hand into a canvas, so the
        sharpness ceiling of the whole model is just the size of those
        canvases. Drawing each one at twice the resolution and scaling the
@@ -4383,20 +4455,28 @@ main:focus{outline:none}
       if(T.sRGBEncoding) t.encoding = T.sRGBEncoding;
 
       if(bumpAmount !== 0){
+        /* the bump map is a one-channel, half-size copy of the picture (it was a full-size colour copy:
+           a quarter of the weight for the channel and a quarter again for the size, with no visible change) */
+        var bw = Math.max(2, c.width >> 1), bh = Math.max(2, c.height >> 1);
         var bc = document.createElement('canvas');
-        bc.width = c.width; bc.height = c.height;
+        bc.width = bw; bc.height = bh;
         var bg = bc.getContext('2d');
-        bg.drawImage(c, 0, 0);
-        var img = bg.getImageData(0, 0, c.width, c.height), d = img.data;
-        for(var i = 0; i < d.length; i += 4){
-          var lum = d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114;
-          d[i] = d[i+1] = d[i+2] = lum; d[i+3] = 255;
+        bg.drawImage(c, 0, 0, bw, bh);
+        var d = bg.getImageData(0, 0, bw, bh).data, lum = new Uint8Array(bw * bh);
+        for(var by = 0; by < bh; by++){
+          var srow = (bh - 1 - by) * bw * 4, drow = by * bw;   /* canvas row 0 is the top; the data texture's row 0 is the bottom */
+          for(var bx2 = 0; bx2 < bw; bx2++){
+            var si = srow + bx2 * 4;
+            lum[drow + bx2] = d[si] * 0.299 + d[si + 1] * 0.587 + d[si + 2] * 0.114;
+          }
         }
-        bg.putImageData(img, 0, 0);
-        var b = new T.CanvasTexture(bc);
+        var b = new T.DataTexture(lum, bw, bh, T.LuminanceFormat, T.UnsignedByteType);
         b.wrapS = b.wrapT = T.RepeatWrapping;
+        b.minFilter = T.LinearMipmapLinearFilter; b.magFilter = T.LinearFilter;
+        b.generateMipmaps = true;
         b.repeat.set(rx || 1, ry || 1);
         b.anisotropy = maxAniso;
+        b.needsUpdate = true;
         t.bump = b;
       }
       texCache[key] = t;
@@ -4450,30 +4530,30 @@ main:focus{outline:none}
        Doubled resolution over the first pass — this is the single largest,
        closest surface in the whole model, and it is what "expensive
        stone floor" or "flat grey plastic" hinges on up close. ---- */
-    var texFloor = mkTex('floor', 1024, 1024, function(g,w,h){
+    var texFloor = libOrTex('Tiles139', 6.3, 3.4, [214,203,184], 0.8, 0, function(){ return mkTex('floor', 1024, 1024, function(g,w,h){
       base(g,w,h,'#CBC0AD');
       vein(g,w,h,'rgba(138,126,108,ALPHA)', 140, false, 11);
       vein(g,w,h,'rgba(238,232,220,ALPHA)', 80, false, 14);
       vein(g,w,h,'rgba(104,94,80,ALPHA)', 28, false, 20);
       speck(g,w,h,2600,0.05);
       grout(g,w,h,2,2,'rgba(142,133,118,.55)',3.5);
-    }, 9, 9);
+    }, 9, 9); }, 0.45);
 
     /* ---- bathroom porcelain: grey, vertical linear vein ---- */
-    var texBathWall = mkTex('bathwall', 512, 512, function(g,w,h){
+    var texBathWall = libOrTex('Concrete030', 3, 3, [228,220,207], 0.5, 0, function(){ return mkTex('bathwall', 512, 512, function(g,w,h){
       base(g,w,h,'#BCB6AE');
       vein(g,w,h,'rgba(120,114,106,ALPHA)', 110, true, 5);
       vein(g,w,h,'rgba(232,228,221,ALPHA)', 60, true, 6);
       speck(g,w,h,700,0.05);
       grout(g,w,h,2,3,'rgba(150,144,136,.45)',2);
-    }, 3, 3);
+    }, 3, 3); }, 0.65);
 
-    var texBathFloor = mkTex('bathfloor', 512, 512, function(g,w,h){
+    var texBathFloor = libOrTex('Concrete042A', 2, 2, [218,210,198], 0.5, 0, function(){ return mkTex('bathfloor', 512, 512, function(g,w,h){
       base(g,w,h,'#C6C0B8');
       vein(g,w,h,'rgba(130,124,116,ALPHA)', 80, false, 8);
       speck(g,w,h,700,0.05);
       grout(g,w,h,2,2,'rgba(155,149,141,.45)',2);
-    }, 5, 5);
+    }, 5, 5); }, 0.6);
 
     /* ---- the herringbone marble mosaic from the primary bath ---- */
     var texHerring = mkTex('herring', 512, 512, function(g,w,h){
@@ -4498,24 +4578,37 @@ main:focus{outline:none}
        wall. Deepened from the first pass: under a strong sun and ACES
        tone mapping a pale tan flattens out to white, and the joinery
        stops reading as timber at all. ---- */
-    var texAsh = mkTex('ash', 512, 512, function(g,w,h){
+    var texAsh = libOrTex('Wood094', 1, 1, [195,168,127], 0.6, 0, function(){ return mkTex('ash', 512, 512, function(g,w,h){
       base(g,w,h,'#C3A87F');
       woodGrain(g,w,h,'rgba(120,94,60,ALPHA)','rgba(226,206,172,ALPHA)', 190, false);
       speck(g,w,h,500,0.05);
     }, 1, 1);
+    });
 
-    var texAshV = mkTex('ashv', 512, 512, function(g,w,h){
+    var texAshV = libOrTex('Wood094', 1, 1, [195,168,127], 0.6, Math.PI / 2, function(){ return mkTex('ashv', 512, 512, function(g,w,h){
       base(g,w,h,'#C3A87F');
       woodGrain(g,w,h,'rgba(120,94,60,ALPHA)','rgba(226,206,172,ALPHA)', 190, true);
       speck(g,w,h,500,0.05);
     }, 1, 1);
+    });
+
+    /* ---- pale oak cabinetry (the kitchen): the listing photos show light, quiet, finely
+       jointed cabinet doors, not a strongly figured panel, so the photographic grain is
+       blended well toward its average ---- */
+    var texCab = libOrTex('Wood094', 1, 1, [240,228,206], 0.25, Math.PI / 2, function(){ return mkTex('cabv', 512, 512, function(g,w,h){
+      base(g,w,h,'#EADFC8');
+      woodGrain(g,w,h,'rgba(150,124,92,ALPHA)','rgba(232,218,192,ALPHA)', 120, true);
+      speck(g,w,h,300,0.04);
+    }, 1, 1);
+    }, 0.6);
 
     /* ---- dark walnut: the interior doors and window frames ---- */
-    var texWalnut = mkTex('walnut', 256, 512, function(g,w,h){
+    var texWalnut = libOrTex('Wood060', 1, 1, [90,52,35], 0.7, Math.PI / 2, function(){ return mkTex('walnut', 256, 512, function(g,w,h){
       base(g,w,h,'#5A3423');
       woodGrain(g,w,h,'rgba(38,20,12,ALPHA)','rgba(134,86,58,ALPHA)', 110, true);
       speck(g,w,h,300,0.09);
     }, 1, 1);
+    });
 
     /* ---- the warm wood cladding panels on the entry facade ---- */
     var texClad = mkTex('clad', 256, 512, function(g,w,h){
@@ -4528,21 +4621,23 @@ main:focus{outline:none}
     }, 1, 1);
 
     /* ---- white quartz counters ---- */
-    var texQuartz = mkTex('quartz', 512, 512, function(g,w,h){
+    var texQuartz = libOrTex('Marble025', 1, 1, [244,242,237], 0.3, 0, function(){ return mkTex('quartz', 512, 512, function(g,w,h){
       base(g,w,h,'#F4F2ED');
       vein(g,w,h,'rgba(196,192,184,ALPHA)', 40, false, 12);
       vein(g,w,h,'rgba(226,220,208,ALPHA)', 22, false, 20);
       speck(g,w,h,700,0.025);
     }, 1, 1);
+    });
 
     /* ---- the onyx/marble dining table and the veined stone wall panel ---- */
-    var texMarble = mkTex('marble', 512, 512, function(g,w,h){
+    var texMarble = libOrTex('Marble021', 1, 1, [228,220,203], 0.3, 0, function(){ return mkTex('marble', 512, 512, function(g,w,h){
       base(g,w,h,'#E4DCCB');
       vein(g,w,h,'rgba(168,146,112,ALPHA)', 44, false, 26);
       vein(g,w,h,'rgba(120,102,78,ALPHA)', 16, false, 34);
       vein(g,w,h,'rgba(252,248,240,ALPHA)', 30, false, 20);
       speck(g,w,h,260,0.03);
     }, 1, 1);
+    });
 
     /* ---- exterior stucco ---- */
     /* A tiling texture may only carry detail FINER than its own tile.
@@ -4554,7 +4649,7 @@ main:focus{outline:none}
        find the seam because there is no feature large enough to match up
        against its neighbour. Broad tonal drift now comes from the
        lighting and the wall-crease AO instead, where it belongs. */
-    var texStucco = mkTex('stucco', 768, 768, function(g,w,h){
+    var texStucco = libOrTex('Plaster002', 1, 1, [239,237,232], 0.9, 0, function(){ return mkTex('stucco', 768, 768, function(g,w,h){
       base(g,w,h,'#EFEDE8');
       speck(g,w,h,52000,0.045);
       /* the fine troweled aggregate of a real sand-float stucco */
@@ -4571,6 +4666,7 @@ main:focus{outline:none}
         g.fill();
       }
     }, 5, 5);
+    });
 
     /* ---- palm frond: a real frond is dozens of thin leaflets off a
        central rib, not a solid wedge. Drawn on a transparent canvas and
@@ -4755,7 +4851,7 @@ main:focus{outline:none}
             speckle and veining underneath, which is what read as "flat"
             rather than "bright". Real off-white paints measure well
             under 100% reflectance for the same reason. ---- */
-    var texPlaster = mkTex('plaster', 512, 512, function(g,w,h){
+    var texPlaster = libOrTex('Concrete034', 1, 1, [239,236,227], 0.5, 0, function(){ return mkTex('plaster', 512, 512, function(g,w,h){
       base(g,w,h,'#EFECE3');
       speck(g,w,h,7000,0.028);
       for(var i=0;i<420;i++){
@@ -4766,6 +4862,7 @@ main:focus{outline:none}
       }
       vein(g,w,h,'rgba(228,224,216,ALPHA)', 18, false, 30);
     }, 3, 3);
+    }, 0.75);
 
     /* ---- the kitchen's tropical-leaf relief backsplash ---- */
     var texLeaf = mkTex('leaf', 512, 512, function(g,w,h){
@@ -5017,7 +5114,12 @@ main:focus{outline:none}
       };
       if(opts.map){
         p.map = opts.map;
-        if(opts.map.bump){
+        if(opts.map.lib){
+          var L = opts.map.lib;
+          if(L.n){ p.normalMap = L.n; p.normalScale = new T.Vector2(L.ns, L.ns); }
+          if(L.r) p.roughnessMap = L.r;
+          p.color = new T.Color(colour).multiply(L.tint);
+        } else if(opts.map.bump){
           p.bumpMap = opts.map.bump;
           p.bumpScale = (opts.bump === undefined ? 0.035 : opts.bump);
         }
@@ -5056,9 +5158,12 @@ main:focus{outline:none}
     var mCeil     = M(0xF2F0E9, 0.96, 0.0, { env:0.22 });   /* same clipping headroom as the wall plaster, below */
     var mAsh      = M(0xFFFFFF, 0.56, 0.0, { map:texAsh, bump:0.016, env:0.42 });
     var mAshV     = M(0xFFFFFF, 0.56, 0.0, { map:texAshV, bump:0.016, env:0.42 });
+    var mCab      = M(0xFFFFFF, 0.46, 0.0, { map:texCab, bump:0.010, env:0.45 });
     var mWalnut   = M(0xFFFFFF, 0.44, 0.0, { map:texWalnut, bump:0.018, env:0.50 });
     var mClad     = M(0xFFFFFF, 0.62, 0.0, { map:texClad, bump:0.040, env:0.42 });
-    var mQuartz   = M(0xFFFFFF, 0.14, 0.0, { map:texQuartz, bump:0.006, env:1.05 });
+    /* a honed rather than mirror polish: at 0.14 a worktop seen along its
+       length was nearly all reflection of the dimmer room, and read grey */
+    var mQuartz   = M(0xFFFFFF, 0.30, 0.0, { map:texQuartz, bump:0.006, env:0.85 });
     var mMarble   = M(0xFFFFFF, 0.10, 0.0, { map:texMarble, bump:0.005, env:1.15 });
     var mStucco   = M(0xFAF8F2, 0.90, 0.0, { map:texStucco, bump:0.028, env:0.40 });
     var mStuccoG  = M(0xD8D5CE, 0.90, 0.0, { map:texStucco, bump:0.028, env:0.40 });
@@ -5144,14 +5249,35 @@ main:focus{outline:none}
     /* All of these now carry a real woven surface. The bump scale is
        deliberately high for cloth — fabric relief is coarse compared to
        stone, and it is what catches raking light off a sofa arm. */
-    var mLinen    = M(0xFFFFFF, 0.97, 0.0, { map:texLinen,    bump:0.052, env:0.14 });  /* cream sectionals */
-    var mLinenLt  = M(0xFFFFFF, 0.97, 0.0, { map:texLinenLt,  bump:0.048, env:0.14 });
+    /* photographed woven cloth (ambientCG Fabric062), one shared texture set for every upholstery colour:
+       the colour comes from the material, the weave from the photo. Falls back to the drawn weave. */
+    var texFab = libOrTex('Fabric062', 1, 1, [255,255,255], 0.9, 0, function(){ return null; }, 0.3);
+    function fabM(colour, rough, env, old){
+      if(!texFab) return old();
+      var m = M(colour, rough, 0.0, { map:texFab, env:env }); m.roughnessMap = null; /* cloth roughness is near-constant: one texture read saved */ m.userData.fabric = true; return m;
+    }
+    var mLinen    = fabM(0xE5DFD2, 0.97, 0.14, function(){ return M(0xFFFFFF, 0.97, 0.0, { map:texLinen,    bump:0.052, env:0.14 }); });  /* cream sectionals */
+    var mLinenLt  = fabM(0xEFEBE1, 0.97, 0.14, function(){ return M(0xFFFFFF, 0.97, 0.0, { map:texLinenLt,  bump:0.048, env:0.14 }); });
     var mTeal     = M(0xFFFFFF, 0.74, 0.0, { map:texTeal,     bump:0.030, env:0.34 });  /* the velvet chairs */
     var mLeather  = M(0xFFFFFF, 0.52, 0.0, { map:texLeather,  bump:0.075, env:0.42 });  /* quilted dining + island chairs */
-    var mBlush    = M(0xFFFFFF, 0.94, 0.0, { map:texBlush,    bump:0.050, env:0.16 });
-    var mNavy     = M(0xFFFFFF, 0.88, 0.0, { map:texNavy,     bump:0.050, env:0.20 });
-    var mWhiteFab = M(0xFFFFFF, 0.96, 0.0, { map:texWhiteFab, bump:0.044, env:0.16 });
+    var mBlush    = fabM(0xDFC0B1, 0.94, 0.16, function(){ return M(0xFFFFFF, 0.94, 0.0, { map:texBlush,    bump:0.050, env:0.16 }); });
+    var mThrow    = fabM(0xB59486, 0.95, 0.16, function(){ return M(0xB59486, 0.95, 0.0, { env:0.16 }); });   /* a dusty-rose throw */
+    var mGreige   = fabM(0xC9BCA8, 0.95, 0.16, function(){ return M(0xC9BCA8, 0.95, 0.0, { env:0.16 }); });   /* upholstered headboards */
+    var mSage     = fabM(0x8E9A7E, 0.95, 0.16, function(){ return M(0x8E9A7E, 0.95, 0.0, { env:0.16 }); });   /* an accent pillow */
+    var mNavy     = fabM(0x27364F, 0.88, 0.20, function(){ return M(0xFFFFFF, 0.88, 0.0, { map:texNavy,     bump:0.050, env:0.20 }); });
+    var mWhiteFab = fabM(0xF4F2EC, 0.96, 0.16, function(){ return M(0xFFFFFF, 0.96, 0.0, { map:texWhiteFab, bump:0.044, env:0.16 }); });
     var mAmber    = M(0xE8B978, 0.22, 0.0, { env:0.9, emissive:0xC98A3E, ei:0.55 });
+    /* Cloth is not plain matte: its fibres catch light where the surface
+       turns away from you, so a velvet chair or a linen sofa arm glows
+       softly along its curves. A few instructions per cloth pixel. */
+    var FABRIC_SHEEN = function(sh){
+      sh.fragmentShader = sh.fragmentShader.replace('#include <aomap_fragment>', [
+        '{ float fNV = pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 3.0);',
+        '  reflectedLight.indirectDiffuse += diffuseColor.rgb * iblIrradiance * RECIPROCAL_PI * 0.55 * fNV;',
+        '  reflectedLight.directDiffuse *= 1.0 + 0.35 * fNV; }',
+        '#include <aomap_fragment>'].join('\n'));
+    };
+    [mLinen, mLinenLt, mTeal, mBlush, mNavy, mWhiteFab, mThrow, mGreige, mSage].forEach(function(m){ m.onBeforeCompile = FABRIC_SHEEN; });
 
     var mHedge    = M(0xFFFFFF, 0.94, 0.0, { map:texHedgeDk, bump:0.060, env:0.16 });
     var mHedgeLt  = M(0xFFFFFF, 0.93, 0.0, { map:texHedgeLt, bump:0.060, env:0.16 });
@@ -5163,11 +5289,74 @@ main:focus{outline:none}
     var mCoconut  = M(0x6E5B3E, 0.90, 0.0, { env:0.20 });
     var mSoil     = M(0x40342A, 0.98, 0.0, { env:0.10 });
 
+    /* Indoor plants: real leaf shapes on real stems. The plants used to be
+       flattened spheres wearing a see-through frond picture, which read as
+       torn green lumps. One instanced mesh of smooth, pointed leaves per
+       plant, each with its own shade of green, on thin curved stems. */
+    var mStem = M(0x5E4A32, 0.8, 0.0, { env:0.10 });
+    var mLeafBlade = M(0xFFFFFF, 0.55, 0.0, { env:0.28, side:T.DoubleSide });
+    mLeafBlade.vertexColors = true;
+    /* One leaf: a real outline (pointed tip, narrow base), a V-fold along the midrib, a downward arch along its
+       length, a lighter midrib and a darker base. 7 x 5 vertices = 48 triangles (the old leaf was a 108-triangle
+       flattened ball). Length runs along +z. */
+    function leafShape(len, wid, fold, droop, pow, LSn, WSn){
+      var LS = LSn || 6, WS = WSn || 4, pos = [], col = [], idx = [];
+      for(var i = 0; i <= LS; i++){
+        var u = i / LS, hw = wid / 2 * Math.pow(Math.max(0, Math.sin(Math.PI * Math.pow(u, 0.72))), pow);
+        for(var j = 0; j <= WS; j++){
+          var v = (j - WS / 2) / (WS / 2);
+          pos.push(v * hw, Math.abs(v) * hw * fold - droop * len * u * u, len * u);
+          var sh = 0.72 + 0.34 * u + (j === WS / 2 ? 0.14 : 0) - Math.abs(v) * 0.05;
+          col.push(sh, sh, sh);
+        }
+      }
+      for(var a = 0; a < LS; a++) for(var b = 0; b < WS; b++){
+        var p0 = a * (WS + 1) + b, p1 = p0 + 1, p2 = p0 + WS + 1, p3 = p2 + 1;
+        idx.push(p0, p2, p1, p1, p2, p3);
+      }
+      var g = new T.BufferGeometry();
+      g.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+      g.setAttribute('color', new T.Float32BufferAttribute(col, 3));
+      g.setIndex(idx); g.computeVertexNormals();
+      return g;
+    }
+    var LEAF_GEO = leafShape(0.32, 0.105, 0.20, 0.32, 0.85);     /* long, arching, pointed (palm / dracaena style) */
+    var LEAF_BROAD = leafShape(0.20, 0.135, 0.16, 0.16, 0.55);   /* broad, glossy, upright (rubber-plant style) */
+    var LEAF_ROUND = leafShape(0.10, 0.075, 0.10, 0.10, 0.50);   /* small round leaves on stems (eucalyptus) */
+    var LEAF_GEO_L = leafShape(0.32, 0.105, 0.20, 0.32, 0.85, 4, 2), LEAF_BROAD_L = leafShape(0.20, 0.135, 0.16, 0.16, 0.55, 4, 2), LEAF_ROUND_L = leafShape(0.10, 0.075, 0.10, 0.10, 0.50, 3, 2);   /* 16 triangles: for big plantings seen at a distance */
+    function leafyPlant(x, y, z, o){
+      var n = o.n || 14, H = o.h || 0.5, sc = o.scale || 1, stems = o.stems || 1, lean = o.lean || 0.06, hue = o.hue === undefined ? 0.29 : o.hue;
+      var im = new T.InstancedMesh(o.low ? (o.round ? LEAF_ROUND_L : o.broad ? LEAF_BROAD_L : LEAF_GEO_L) : o.round ? LEAF_ROUND : o.broad ? LEAF_BROAD : LEAF_GEO, mLeafBlade, n);
+      var m4 = new T.Matrix4(), q = new T.Quaternion(), e = new T.Euler(), v = new T.Vector3(), s = new T.Vector3(), c = new T.Color(), up = new T.Vector3(0, 1, 0);
+      var tops = [];
+      for(var k = 0; k < stems; k++){
+        var ak = k / stems * 6.283 + Math.random() * 0.6, tx = Math.sin(ak) * lean * H, tz = Math.cos(ak) * lean * H;
+        tops.push([tx, tz]);
+        var dir = new T.Vector3(tx, H, tz), len = dir.length(), st = new T.Mesh(new T.CylinderGeometry(0.008, 0.012, len, 6), mStem);
+        st.position.set(x + tx / 2, y + H / 2, z + tz / 2);
+        st.quaternion.setFromUnitVectors(up, dir.normalize());
+        world.add(st);
+      }
+      for(var i = 0; i < n; i++){
+        var t = 0.25 + 0.75 * (i / Math.max(1, n - 1)), tp = tops[i % stems], a = i * 2.399 + Math.random() * 0.5;
+        var tilt = (o.upright ? 0.5 : 0.25) + t * 0.65 + (Math.random() - 0.5) * 0.3;
+        e.set(-tilt, a, (Math.random() - 0.5) * 0.5, 'YXZ'); q.setFromEuler(e);   /* each leaf also rolls a little on its own axis */
+        v.set(x + tp[0] * t, y + H * t, z + tp[1] * t);
+        var kk = sc * (0.75 + 0.5 * Math.random()) * (1.12 - 0.45 * t);
+        s.set(kk, kk, kk); m4.compose(v, q, s); im.setMatrixAt(i, m4);
+        c.setHSL(hue + (Math.random() - 0.5) * 0.05, (o.sat === undefined ? 0.46 : o.sat) * (0.85 + Math.random() * 0.3), (o.light === undefined ? 0.27 : o.light) + Math.random() * 0.10 + t * 0.05);
+        im.setColorAt(i, c);
+      }
+      im.instanceMatrix.needsUpdate = true; im.instanceColor.needsUpdate = true;
+      im.castShadow = true; im.frustumCulled = false;
+      world.add(im);
+    }
+
     /* the glossy interior finishes: once the house is built these reflect a
        picture of the house itself rather than the open sky (see
        REFLECTIONS). Matte plaster, ceilings and fabric keep the sky's softer,
        brighter light — given the room's own picture they went a muddy grey. */
-    [mFloor, mBathWall, mBathFlr, mHerring, mAsh, mAshV, mWalnut, mQuartz, mMarble, mLeaf,
+    [mFloor, mBathWall, mBathFlr, mHerring, mAsh, mAshV, mCab, mWalnut, mQuartz, mMarble, mLeaf,
      mChrome, mCopper, mBrass, mSteel, mBlack, mScreen, mLeather, mAmber].forEach(function(m){ m.userData.interior = true; });
 
     var mLake     = M(0x2E6E82, 0.10, 0.06, { env:0.85 });
@@ -5196,7 +5385,7 @@ main:focus{outline:none}
       t.wrapS = t.wrapT = T.RepeatWrapping;
       return t;
     })();
-    [mFloor, mBathFlr, mBathWall, mMarble, mQuartz, mWalnut, mAsh, mAshV, mHerring, mMosaic, mDeck].forEach(function(m){
+    [mFloor, mBathFlr, mBathWall, mMarble, mQuartz, mWalnut, mAsh, mAshV, mCab, mHerring, mMosaic, mDeck].forEach(function(m){
       m.roughnessMap = texRough;
     });
 
@@ -5469,6 +5658,7 @@ main:focus{outline:none}
       if(w < 0.001 || d < 0.001) return null;
       batchStatic(new T.BoxGeometry(w, thick, d),
                   mat, (x1+x2)/2, yTop - thick/2, (z1+z2)/2, cast);
+      if(cast !== false && thick >= 0.12) wallShadow(w, thick - 0.10, d, (x1+x2)/2, yTop - thick/2, (z1+z2)/2);
       return null;
     }
 
@@ -5504,20 +5694,16 @@ main:focus{outline:none}
        cloned texture instead of minting a new GPU texture per wall. */
     var WALL_GRAIN = 2.4;
     var wallMatCache = {};
-    function scaledWallMat(mat, spanU, spanV){
+    /* A long wall needs the plaster grain repeated more times than a short pier. That used to clone the
+       texture per size (each clone is uploaded to the graphics card again: the walls alone were hundreds of
+       MB). Now the wall's own UVs are scaled and every wall shares the one texture. */
+    function scaledWallMat(mat, spanU, spanV, geo){
       if(!mat || !mat.map) return mat || mWall;
       var rw = Math.max(0.5, Math.round((spanU / WALL_GRAIN) * 2) / 2);
       var rh = Math.max(0.5, Math.round((spanV / WALL_GRAIN) * 2) / 2);
-      var key = mat.uuid + '|' + rw + '|' + rh;
-      var cached = wallMatCache[key];
-      if(cached) return cached;
-      var m2 = mat.clone();
-      m2.map = mat.map.clone(); m2.map.repeat.set(rw, rh); m2.map.needsUpdate = true;
-      if(mat.bumpMap){
-        m2.bumpMap = mat.bumpMap.clone(); m2.bumpMap.repeat.set(rw, rh); m2.bumpMap.needsUpdate = true;
-      }
-      wallMatCache[key] = m2;
-      return m2;
+      var sx = rw / mat.map.repeat.x, sy = rh / mat.map.repeat.y, uv = geo.attributes.uv;
+      for(var k = 0; k < uv.count; k++) uv.setXY(k, uv.getX(k) * sx, uv.getY(k) * sy);
+      return mat;
     }
 
     /* Walls, floors/ceilings/roofs (slab) and rounded furniture (rbx) were
@@ -5548,11 +5734,47 @@ main:focus{outline:none}
       if(!staticBatches[key]) staticBatches[key] = { mat: mat, cast: cast !== false, geos: [] };
       staticBatches[key].geos.push(geo);
     }
+    /* The sun's shadow map records the far side of every wall (the side
+       away from the sun), which for a wall is the inner face of the room
+       behind it. Right beside a corner, the neighbouring wall's inner face
+       is only a couple of centimetres deeper than the surface being lit,
+       closer than the shadow bias allows, so a hairline of sun showed at
+       almost every interior corner. Each wall therefore also gets an
+       invisible copy, a little thinner, that records its sun-facing side:
+       that side is a full wall thickness ahead of anything in the room. It
+       draws nothing (no colour, no depth) and is inset so a sunlit outside
+       wall never shadows itself. */
+    var mShadowOnly = new T.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
+    mShadowOnly.shadowSide = T.FrontSide;
+    function wallShadow(w, h, d, x, y, z){
+      if(!T.BufferGeometryUtils) return;
+      var geo = new T.BoxGeometry(w, h, d);
+      geo.translate(x, y, z);
+      if(!staticBatches.shadowOnly) staticBatches.shadowOnly = { mat: mShadowOnly, cast: true, geos: [] };
+      staticBatches.shadowOnly.geos.push(geo);
+    }
+    /* Fabric weave in real size: every box face used to stretch the texture over the whole face, which on a
+       5 m sofa blurs any cloth photo to nothing. This projects the UVs from the piece's own position, so one
+       tile is always FAB_TILE metres, on every piece and size. */
+    var FAB_TILE = 0.40;
+    function fabricUV(geo){
+      var p = geo.attributes.position, n = geo.attributes.normal, uv = geo.attributes.uv;
+      if(!uv || !n) return;
+      for(var i = 0; i < p.count; i++){
+        var ax = Math.abs(n.getX(i)), ay = Math.abs(n.getY(i)), az = Math.abs(n.getZ(i));
+        var x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+        if(ay >= ax && ay >= az) uv.setXY(i, x / FAB_TILE, z / FAB_TILE);
+        else if(ax >= az) uv.setXY(i, z / FAB_TILE, y / FAB_TILE);
+        else uv.setXY(i, x / FAB_TILE, y / FAB_TILE);
+      }
+      uv.needsUpdate = true;
+    }
     function flushStaticBatches(){
       if(!T.BufferGeometryUtils) return;
       Object.keys(staticBatches).forEach(function(key){
         var batch = staticBatches[key];
         if(!batch.geos.length) return;
+        if(batch.mat.userData.fabric) batch.geos.forEach(fabricUV);
         var merged = T.BufferGeometryUtils.mergeBufferGeometries(batch.geos, false);
         /* mergeBufferGeometries doesn't compute these itself, and a merged
            geometry with no bounding sphere is exactly the kind of thing
@@ -5576,12 +5798,28 @@ main:focus{outline:none}
        exterior walls don't get one. */
     var mBase = M(0xF4F2EC, 0.42, 0.0, { env:0.40 });
     mBase.userData.interior = true;
+    var mTrim = M(0xF3F1EB, 0.48, 0.0, { env:0.32 });   /* door and opening trim */
+    /* a shadow gap: the thin dark recess a modern plasterer leaves where the wall meets the ceiling, so the
+       ceiling reads as a floating plane instead of a hard seam. Only on faces under a standard ceiling
+       (not the double-height great room or the raised foyer, where the wall carries on above) */
+    var mGap = M(0x3A3631, 0.9, 0.0, { env:0.1 });
+    function lowCeilAt(x, z){
+      var inHouse = (x > -20.3 && x < 17.2 && z > -14.2 && z < 6.1) || (x > 8 && x < 13.2 && z > -19.6 && z < -14.11);
+      if(!inHouse) return false;
+      if(x > -6.0 && x < 8.1 && z > -2.0 && z < 6.1) return false;     /* double height */
+      if(x > -4.1 && x < 5.1 && z > -13.2 && z < -8.0) return false;   /* foyer, raised */
+      return true;
+    }
     function skirting(alongX, a1, a2, c, t, mat, y0, h){
       if(y0 || h < 1.2 || (mat && mat !== mWall && mat !== mWallWarm)) return;
-      var L = Math.abs(a2 - a1), m = (a1 + a2) / 2;
+      var L = Math.abs(a2 - a1), m = (a1 + a2) / 2, gapY = FL + CH - 0.14 - 0.009;
       [-1, 1].forEach(function(s){
         if(alongX) batchStatic(new T.BoxGeometry(L, 0.09, 0.014), mBase, m, FL + 0.045, c + s * (t / 2 + 0.007), false);
         else batchStatic(new T.BoxGeometry(0.014, 0.09, L), mBase, c + s * (t / 2 + 0.007), FL + 0.045, m, false);
+        if(Math.abs(h - CH) > 0.01 || L < 0.3) return;
+        var off = c + s * (t / 2 + 0.002), probe = c + s * (t / 2 + 0.3);
+        if(alongX){ if(lowCeilAt(m, probe)) batchStatic(new T.BoxGeometry(L, 0.018, 0.004), mGap, m, gapY, off, false); }
+        else { if(lowCeilAt(probe, m)) batchStatic(new T.BoxGeometry(0.004, 0.018, L), mGap, off, gapY, m, false); }
       });
     }
 
@@ -5592,8 +5830,9 @@ main:focus{outline:none}
       skirting(true, x1, x2, z, t, mat, y0, h);
       blocker(x1, z - t/2, x2, z + t/2, y0, h);
       WALL_BOXES.push(new T.Box3(new T.Vector3(Math.min(x1,x2), FL + y0, z - t/2), new T.Vector3(Math.max(x1,x2), FL + y0 + h, z + t/2)));
-      batchStatic(new T.BoxGeometry(Math.abs(x2-x1), h, t),
-                  scaledWallMat(mat || mWall, Math.abs(x2-x1), h), (x1+x2)/2, FL + y0 + h/2, z);
+      var wgx = new T.BoxGeometry(Math.abs(x2-x1), h, t);
+      batchStatic(wgx, scaledWallMat(mat || mWall, Math.abs(x2-x1), h, wgx), (x1+x2)/2, FL + y0 + h/2, z);
+      wallShadow(Math.abs(x2-x1) + 0.12, h, Math.max(0.06, t - 0.10), (x1+x2)/2, FL + y0 + h/2, z);
       return null;
     }
     /* wall running along Z (constant x) */
@@ -5603,8 +5842,9 @@ main:focus{outline:none}
       skirting(false, z1, z2, x, t, mat, y0, h);
       blocker(x - t/2, z1, x + t/2, z2, y0, h);
       WALL_BOXES.push(new T.Box3(new T.Vector3(x - t/2, FL + y0, Math.min(z1,z2)), new T.Vector3(x + t/2, FL + y0 + h, Math.max(z1,z2))));
-      batchStatic(new T.BoxGeometry(t, h, Math.abs(z2-z1)),
-                  scaledWallMat(mat || mWall, Math.abs(z2-z1), h), x, FL + y0 + h/2, (z1+z2)/2);
+      var wgz = new T.BoxGeometry(t, h, Math.abs(z2-z1));
+      batchStatic(wgz, scaledWallMat(mat || mWall, Math.abs(z2-z1), h, wgz), x, FL + y0 + h/2, (z1+z2)/2);
+      wallShadow(Math.max(0.06, t - 0.10), h, Math.abs(z2-z1) + 0.12, x, FL + y0 + h/2, (z1+z2)/2);
       return null;
     }
 
@@ -5625,7 +5865,8 @@ main:focus{outline:none}
        "CGI furniture" and furniture. Vertices are clamped onto a
        rounded shell rather than left as hard 90-degree corners. */
     function roundGeo(w, h, d, r, seg){
-      var g = new T.BoxGeometry(w, h, d, seg||4, seg||4, seg||4);
+      var sg = seg && seg.length ? seg : [seg||4, seg||4, seg||4];   /* seg may be one number or [x, y, z] */
+      var g = new T.BoxGeometry(w, h, d, sg[0], sg[1], sg[2]);
       var p = g.attributes.position;
       var ix = Math.max(0, w/2 - r), iy = Math.max(0, h/2 - r), iz = Math.max(0, d/2 - r);
       for(var i=0;i<p.count;i++){
@@ -5640,9 +5881,147 @@ main:focus{outline:none}
       g.computeVertexNormals();
       return g;
     }
-    function rbx(w, h, d, x, y, z, mat, r, cast){
-      batchStatic(roundGeo(w, h, d, r === undefined ? 0.06 : r, 4), mat, x, y, z, cast);
+    /* a cushion: the same rounded box, then the two big faces are pushed outward in the middle, so it reads
+       as stuffed cloth that sags at the edges instead of a flat slab (pillows, seat cushions, duvets) */
+    function puffGeo(w, h, d, r, puff, rip){
+      var ax = (h <= w && h <= d) ? 1 : (d <= w ? 2 : 0);          /* the thin axis */
+      var sg = rip ? [8, 8, 8] : [4, 4, 4]; sg[ax] = 3;                              /* detail only where the bulge is */
+      var g = roundGeo(w, h, d, r, sg), p = g.attributes.position;
+      var hs = [w / 2, h / 2, d / 2], a1 = (ax + 1) % 3, a2 = (ax + 2) % 3;
+      for(var i = 0; i < p.count; i++){
+        var c = [p.getX(i), p.getY(i), p.getZ(i)];
+        if(Math.abs(c[ax]) < hs[ax] * 0.55) continue;
+        var k = Math.max(0, 1 - Math.pow(c[a1] / hs[a1], 2)) * Math.max(0, 1 - Math.pow(c[a2] / hs[a2], 2));
+        c[ax] += (c[ax] > 0 ? 1 : -1) * puff * k;
+        /* soft creases across the top face, strongest mid-cloth (bedding is never smooth) */
+        if(rip && c[ax] > 0) c[ax] += rip * k * (Math.sin(c[a1] * 6.5 + 1.3) * Math.sin(c[a2] * 4.6 + 0.4) + 0.5 * Math.sin(c[a1] * 11 + c[a2] * 8.5));
+        p.setXYZ(i, c[0], c[1], c[2]);
+      }
+      g.computeVertexNormals();
+      return g;
+    }
+    function rbx(w, h, d, x, y, z, mat, r, cast, puff, rip){
+      batchStatic(puff ? puffGeo(w, h, d, r === undefined ? 0.06 : r, puff, rip) : roundGeo(w, h, d, r === undefined ? 0.06 : r, 4), mat, x, y, z, cast);
       return null;
+    }
+
+    /* ---- bathroom fixtures, turned/sculpted instead of rounded boxes ----
+       Each is a LatheGeometry (a profile spun around the vertical axis) stretched into an oval by the mesh
+       scale: smooth curves, a real rim, a hollow inside. Profile = [radius (1 = full size), height in metres]. */
+    var mPorc = M(0xFCFBF8, 0.16, 0.0, { env:0.9 });
+    mPorc.side = T.DoubleSide;
+    var mGrooveG = M(0x4A4036, 0.7, 0.0, {});
+    function latheMesh(prof, sx, sz, mat, seg){
+      var m = new T.Mesh(new T.LatheGeometry(prof.map(function(q){ return new T.Vector2(q[0], q[1]); }), seg || 36), mat);
+      m.scale.set(sx, 1, sz); m.castShadow = true; m.receiveShadow = true;
+      return m;
+    }
+    function makeTub(x, z, len, wid, h){
+      var t = latheMesh([[0,0.14],[0.55,0.14],[0.80,0.22],[0.90,h-0.06],[0.93,h-0.015],[0.955,h],[0.985,h-0.015],[1.0,h-0.06],[0.985,0.36],[0.92,0.20],[0.74,0.06],[0.62,0],[0,0]], len / 2, wid / 2, mPorc, 32);
+      t.position.set(x, FL, z); world.add(t);
+    }
+    function makeBasin(x, y, z, rx, rz){
+      var b = latheMesh([[0,0],[0.55,0],[0.90,0.025],[1.0,0.075],[1.0,0.105],[0.94,0.112],[0.90,0.105],[0.88,0.08],[0.6,0.03],[0,0.02]], rx, rz, mPorc, 20);
+      b.position.set(x, y, z); world.add(b);
+    }
+    /* front = +z before rotation, the tank at the back; rot = PI/2 faces +x, -PI/2 faces -x */
+    function makeToilet(x, z, rot){
+      var g = new T.Group();
+      var bowl = latheMesh([[0,0.20],[0.50,0.19],[0.82,0.25],[0.97,0.33],[1.0,0.385],[0.96,0.395],[0.86,0.385],[0.76,0.34],[0.55,0.27],[0,0.24]], 0.19, 0.29, mPorc, 24);
+      bowl.position.z = 0.06; g.add(bowl);
+      var ped = latheMesh([[0,0],[0.70,0],[0.80,0.05],[0.62,0.20],[0,0.20]], 0.16, 0.20, mPorc, 24); ped.position.z = 0.02; g.add(ped);
+      var seat = latheMesh([[0.78,0],[1,0],[1,0.03],[0.78,0.03],[0.78,0]], 0.19, 0.29, mPorc, 24); seat.position.set(0, 0.395, 0.06); g.add(seat);
+      var tank = new T.Mesh(roundGeo(0.40, 0.36, 0.17, 0.05, [4, 4, 3]), mPorc); tank.position.set(0, 0.58, -0.245); tank.castShadow = true; tank.receiveShadow = true; g.add(tank);
+      var lid = new T.Mesh(roundGeo(0.42, 0.03, 0.19, 0.012, [4, 1, 3]), mPorc); lid.position.set(0, 0.775, -0.245); lid.castShadow = true; g.add(lid);
+      var btn = new T.Mesh(new T.CylinderGeometry(0.028, 0.028, 0.012, 14), mChrome); btn.position.set(0, 0.797, -0.245); g.add(btn);
+      g.position.set(x, FL, z); g.rotation.y = rot; world.add(g);
+    }
+    /* A ceiling-mounted rain shower: flange on the ceiling, drop pipe, square head at cx/cz; the mixer valve
+       sits on the wall at z = wallZ, facing +z. (The old head was a stub hanging in mid-air.) */
+    function rainShower(cx, cz, wallZ){
+      var yc = FL + CH - 0.14, yh = FL + 2.28;
+      cyl(0.045, 0.045, 0.012, cx, yc - 0.006, cz, mChrome, 18);                    /* ceiling flange */
+      cyl(0.012, 0.012, yc - yh, cx, (yc + yh) / 2, cz, mChrome, 10);               /* drop pipe */
+      rbx(0.30, 0.016, 0.30, cx, yh - 0.008, cz, mChrome, 0.006);                  /* the head */
+      var v = cyl(0.065, 0.065, 0.012, cx, FL + 1.10, wallZ + 0.006, mChrome, 20); v.rotation.x = Math.PI / 2;   /* valve plate */
+      bx(0.018, 0.018, 0.10, cx, FL + 1.10, wallZ + 0.055, mChrome, false);        /* lever */
+      bx(0.14, 0.018, 0.018, cx + 0.05, FL + 1.10, wallZ + 0.10, mChrome, false);
+    }
+
+    /* the joints between the doors and drawers of a floating vanity (faceX = the room-facing face) */
+    function vanityReveals(faceX, zc, len, yc, h){
+      bx(0.012, 0.012, len, faceX, yc, zc, mGrooveG, false);
+      var n = Math.max(2, Math.round(len / 0.9));
+      for(var k = 1; k < n; k++) bx(0.012, h, 0.012, faceX, yc, zc - len / 2 + len * k / n, mGrooveG, false);
+    }
+
+    /* ---- small decor: turned ceramics, bowls, books, bottles, rolled towels (one shared white glaze) ---- */
+    var mCeramicG = M(0xF1EFEA, 0.22, 0.0, { env:0.9 });
+    mCeramicG.side = T.DoubleSide;
+    var mTowelG = M(0xF2EFE8, 0.95, 0.0, { env:0.2 });
+    var mBookMats = [0xD9D2C3, 0x3E4145, 0xB9A58A, 0x6E7F72].map(function(c){ return M(c, 0.9, 0.0, { env:0.2 }); });
+    var PROF_A = [[0,0],[0.055,0],[0.085,0.05],[0.098,0.11],[0.075,0.19],[0.038,0.26],[0.034,0.32],[0.048,0.345],[0.040,0.348],[0.028,0.335]];
+    var PROF_B = [[0,0],[0.06,0],[0.11,0.05],[0.115,0.11],[0.09,0.16],[0.06,0.185],[0.07,0.195],[0.062,0.198],[0.05,0.19]];
+    function ceramicVase(prof, x, y, z, sc){
+      var o = new T.Mesh(new T.LatheGeometry(prof.map(function(q){ return new T.Vector2(q[0] * sc, q[1] * sc); }), 20), mCeramicG);
+      o.position.set(x, y, z); o.castShadow = true; o.receiveShadow = true; world.add(o);
+    }
+    function decorBowl(x, y, z, r, h, mat){
+      var b = latheMesh([[0,0],[0.42,0],[0.78,h*0.35],[1,h],[0.95,h],[0.74,h*0.45],[0,h*0.12]], r, r, mat || mCeramicG, 24);
+      b.position.set(x, y, z); world.add(b);
+    }
+    function bookStack(x, y, z, rot, n){
+      var t = 0;
+      for(var i = 0; i < n; i++){
+        var h = 0.028 + (i % 2) * 0.008, m = new T.Mesh(new T.BoxGeometry(0.26 - i * 0.02, h, 0.19 - i * 0.012), mBookMats[i % 4]);
+        m.position.set(x, y + t + h / 2, z); m.rotation.y = rot + (i % 2 ? 0.12 : -0.08);
+        m.castShadow = true; m.receiveShadow = true; world.add(m); t += h;
+      }
+    }
+    function towelRolls(x, y, z){
+      [[0.05, -0.055], [0.05, 0.055], [0.145, 0]].forEach(function(q){
+        var c = new T.Mesh(new T.CylinderGeometry(0.05, 0.05, 0.24, 14), mTowelG);
+        c.rotation.z = Math.PI / 2; c.position.set(x, y + q[0], z + q[1]); c.castShadow = true; c.receiveShadow = true; world.add(c);
+      });
+    }
+    function soapBottle(x, y, z){
+      var b = latheMesh([[0,0],[0.9,0],[1,0.02],[1,0.11],[0.6,0.14],[0.28,0.155],[0.28,0.17],[0.5,0.18],[0.3,0.186]], 0.035, 0.035, mCeramicG, 14);
+      b.position.set(x, y, z); world.add(b);
+    }
+
+    /* A made bed as one soft group. Local origin = the middle of the head end, at the top of the bed base
+       (y 0), the foot toward +z. bw = base width, dw = duvet width, L = base length. The duvet hangs over the
+       sides and foot, its top is creased, the sheet is turned down at the head, a throw lies across the
+       foot, and the pillows lean on the headboard. */
+    function makeBedding(bw, dw, L, pillows){
+      var g = new T.Group();
+      function part(geo, m, x, y, z, rx, ry, rz){
+        var o = new T.Mesh(geo, m); o.position.set(x, y, z);
+        if(rx || ry || rz) o.rotation.set(rx || 0, ry || 0, rz || 0);
+        g.add(o); return o;
+      }
+      part(puffGeo(bw - 0.04, 0.18, L - 0.04, 0.06, 0.015), mWhiteFab, 0, 0.09, L / 2);                          /* mattress */
+      var dl = L - 0.45 + 0.03;
+      part(puffGeo(dw, 0.11, dl, 0.05, 0.03, 0.015), mWhiteFab, 0, 0.225, 0.45 + dl / 2);                        /* duvet, creased */
+      [-1, 1].forEach(function(sd){
+        part(roundGeo(0.035, 0.46, L - 0.62, 0.016, [1, 3, 4]), mWhiteFab, sd * (dw / 2 + 0.005), 0.03, 0.45 + (L - 0.62) / 2);   /* hangs over the side */
+      });
+      part(roundGeo(dw, 0.42, 0.035, 0.016, [4, 3, 1]), mWhiteFab, 0, 0.05, L + 0.03);                             /* hangs over the foot */
+      part(puffGeo(dw - 0.02, 0.055, 0.34, 0.025, 0.02), mLinenLt, 0, 0.30, 0.55);                               /* the sheet, turned down */
+      part(puffGeo(dw - 0.02, 0.06, 0.55, 0.025, 0.02, 0.01), mThrow, 0, 0.31, L - 0.72);                          /* the throw */
+      var px = bw / 4 + 0.06;
+      [-1, 1].forEach(function(sd){
+        part(puffGeo(0.64, 0.42, 0.16, 0.08, 0.05), mWhiteFab, sd * px, 0.40, 0.17, -0.30, sd * 0.04, 0);          /* sleeping pillows */
+      });
+      if(pillows > 2){
+        part(puffGeo(0.44, 0.30, 0.12, 0.06, 0.04), mLinenLt, -px + 0.10, 0.33, 0.46, -0.72, 0.10, 0.05);
+        part(puffGeo(0.44, 0.30, 0.12, 0.06, 0.04), mLinenLt, px - 0.10, 0.33, 0.46, -0.72, -0.10, -0.05);
+        part(puffGeo(0.36, 0.22, 0.10, 0.05, 0.035), mNavy, 0, 0.35, 0.54, -0.80, 0.0, 0.08);
+      } else {
+        part(puffGeo(0.36, 0.22, 0.10, 0.05, 0.035), mNavy, 0, 0.35, 0.50, -0.80, 0.0, 0.08);
+      }
+      g.traverse(function(o){ if(o.isMesh){ o.castShadow = true; o.receiveShadow = true; } });
+      return g;
     }
 
     /* a cheap contact shadow — a dark soft disc on the floor. Real
@@ -5705,8 +6084,11 @@ main:focus{outline:none}
       var cx = (x1+x2)/2, cz = (z1+z2)/2;
       if(face === 'n'){ m.rotation.z = 0;             cz += reach/2; }
       else if(face === 's'){ m.rotation.z = Math.PI;  cz -= reach/2; }
-      else if(face === 'e'){ m.rotation.z = -Math.PI/2; cx += reach/2; }
-      else { m.rotation.z = Math.PI/2;                cx -= reach/2; }
+      /* the strip's dark edge must lie against the wall. For 'e' and 'w' these two angles were the
+         wrong way round: the strip was light at the wall and dark 0.6 m out, ending in a hard line
+         across the floor (and a dark square wherever it crossed an n/s strip at a corner) */
+      else if(face === 'e'){ m.rotation.z = Math.PI/2;  cx += reach/2; }
+      else { m.rotation.z = -Math.PI/2;                cx -= reach/2; }
       m.position.set(cx, (y === undefined ? FL : y) + 0.006, cz);
       m.renderOrder = 1;
       world.add(m);
@@ -5999,7 +6381,7 @@ main:focus{outline:none}
       return g;
     }
 
-    var palmTrunks = { royal: [], coco: [] }, palmShafts = [], frondList = [[], [], []], nutMats = [];
+    var palmTrunks = { royal: [], coco: [] }, palmShafts = [], frondList = [[], [], []], nutMats = [], palmTops = [];
     var _pq = new T.Quaternion(), _pe = new T.Euler(), _ps = new T.Vector3(), _pm = new T.Matrix4();
     function palm(x, z, h, lean, kind){
       var royal = (kind === 'royal');
@@ -6027,6 +6409,7 @@ main:focus{outline:none}
         palmShafts.push(tubeGeo(sp, sr, 10, 1.0));
         top = sp[5];
       }
+      palmTops.push({ p: top.clone(), r: (royal ? 3.7 : 3.2) * (0.65 + 0.35 * h / 6.8) });
       var count = (royal ? 22 : 24) - (z > 40 ? 8 : 0);   /* across the lake: a lighter crown, it is only ever seen from afar */
       for(var f = 0; f < count; f++){
         var age = f / (count - 1);
@@ -6251,11 +6634,12 @@ main:focus{outline:none}
       /* the sliding glass wall itself, in four leaves */
       for(var i=0;i<4;i++){
         var gx1 = -5.6 + i*3.4, gx2 = gx1 + 3.3;
-        bx(gx2-gx1, CH - 0.1, 0.06, (gx1+gx2)/2, FL + (CH-0.1)/2, 6.0, mGlass, false);
+        bx(gx2-gx1, CH - 0.1, 0.03, (gx1+gx2)/2, FL + (CH-0.1)/2, 6.0 + (i % 2 ? 0.035 : -0.035), mGlass, false);   /* sliders run on two tracks */
         bx(0.09, CH, 0.11, gx1, FL + CH/2, 6.0, mBronze);
       }
       bx(0.09, CH, 0.11, 8.0, FL + CH/2, 6.0, mBronze);
       bx(14.2, 0.16, 0.16, 1.0, FL + CH, 6.0, mBronze);
+      bx(14.2, 0.025, 0.16, 1.0, FL + 0.0125, 6.0, mBronze, false);   /* the floor track */
 
       /* the clerestory band above the sliders — the feature that makes
          the great room read as double height from inside */
@@ -6286,6 +6670,7 @@ main:focus{outline:none}
       bx(0.1, CH, 0.12, -13.8, FL + CH/2, 6.0, mBronze);
       bx(0.1, CH, 0.12, -10.2, FL + CH/2, 6.0, mBronze);
       bx(3.8, 0.14, 0.14, -12.0, FL + CH, 6.0, mBronze);
+      bx(3.8, 0.025, 0.14, -12.0, FL + 0.0125, 6.0, mBronze, false);   /* the floor track */
       wx(-20, -10, 6.0, 0.5, mStucco, CH, 0.3);
 
       /* ---- WEST face ---- */
@@ -6405,14 +6790,15 @@ main:focus{outline:none}
         bx(0.62 + Math.random()*0.14, 0.30, 0.34, b[0], y, -22.12, mBin, true);
       });
       /* a workbench along the east wall, under a pegboard */
-      bx(1.7, 0.06, 0.62, -14.05, FL + 0.86, -19.0, mAsh);
-      bx(0.06, 0.86, 0.06, -14.68, FL + 0.43, -19.55, mSteel);
-      bx(0.06, 0.86, 0.06, -14.68, FL + 0.43, -18.45, mSteel);
-      bx(1.6, 1.1, 0.04, -14.06, FL + 1.55, -19.0, M(0x8C7A5C, 0.8, 0, { env:0.25 }), false);
-      [[-19.6,1.3],[-18.9,1.7],[-19.3,1.1]].forEach(function(p){
-        cyl(0.012, 0.012, 0.30, -14.03, FL + p[1], p[0], mChrome, 8).rotation.z = Math.PI/2;
+      bx(0.62, 0.06, 1.7, -14.06, FL + 0.86, -19.0, mAsh);
+      [[-14.30, -19.75], [-14.30, -18.25], [-13.83, -19.75], [-13.83, -18.25]].forEach(function(l){
+        bx(0.06, 0.83, 0.06, l[0], FL + 0.415, l[1], mSteel);
       });
-      contact(-14.6, -19.0, 1.6, 1.2);
+      bx(0.04, 1.1, 1.6, -13.77, FL + 1.55, -19.0, M(0x8C7A5C, 0.8, 0, { env:0.25 }), false);
+      [[-19.6,1.3],[-18.9,1.7],[-19.3,1.1]].forEach(function(p){
+        cyl(0.012, 0.012, 0.26, -13.90, FL + p[1], p[0], mChrome, 8).rotation.z = Math.PI/2;
+      });
+      contact(-14.06, -19.0, 0.95, 1.9);
       /* two surface-mounted utility lights down the centre of the bay */
       [[-19.6],[ -16.4]].forEach(function(p){
         var lx = -18.0, lz = p[0];
@@ -6624,6 +7010,14 @@ main:focus{outline:none}
       wz(-2, 1.2, 8.0, CH, mWall);
       wz(5.6, 6.0, 8.0, CH, mWall);
       wz(1.2, 5.6, 8.0, 0.5, mWall, CH - 0.5);
+      /* both ways into the kitchen get the house's painted trim, so they
+         read as proper entrances, the same as the bedroom doors */
+      bx(0.16, 0.10, 4.4, 8.0, FL + CH - 0.55, 3.4, mTrim);
+      bx(0.16, CH - 0.5, 0.10, 8.0, FL + (CH - 0.5)/2, 1.25, mTrim);
+      bx(0.16, CH - 0.5, 0.10, 8.0, FL + (CH - 0.5)/2, 5.55, mTrim);
+      bx(2.0, 0.10, 0.16, 9.6, FL + CH - 0.55, -2.0, mTrim);
+      bx(0.10, CH - 0.5, 0.16, 8.65, FL + (CH - 0.5)/2, -2.0, mTrim);
+      bx(0.10, CH - 0.5, 0.16, 10.55, FL + (CH - 0.5)/2, -2.0, mTrim);
 
       /* Above the standard ceiling the great room keeps going up to the
          double-height slab, so it needs its own walls up there or the
@@ -6644,10 +7038,17 @@ main:focus{outline:none}
 
       /* linear slot diffusers and downlights, both visible in the photographs */
       var mSlot = M(0x2E2E2C, 0.6, 0.2, { env:0.3 });
+      var mSlotFrame = M(0xF4F2EC, 0.5, 0.0, { env:0.35 });
       function slot(x, z, len, y, along){
-        if(along === 'x') bx(len, 0.04, 0.16, x, y - 0.02, z, mSlot, false);
-        else bx(0.16, 0.04, len, x, y - 0.02, z, mSlot, false);
+        var yu = y - 0.14;   /* y = the slab top; its underside is 14 cm lower */
+        if(along === 'x'){ bx(len, 0.008, 0.11, x, yu - 0.004, z, mSlotFrame, false); bx(len - 0.04, 0.002, 0.045, x, yu - 0.009, z, mSlot, false); }
+        else { bx(0.11, 0.008, len, x, yu - 0.004, z, mSlotFrame, false); bx(0.045, 0.002, len - 0.04, x, yu - 0.009, z, mSlot, false); }
       }
+      /* a square air-conditioning grille in each bedroom and the office */
+      [[13.0, -9.2], [13.0, -3.2], [-12.0, -7.2], [10.6, -16.2]].forEach(function(gp){
+        bx(0.46, 0.008, 0.46, gp[0], FL + CH - 0.144, gp[1], mSlotFrame, false);
+        for(var k = 0; k < 5; k++) bx(0.36, 0.002, 0.03, gp[0], FL + CH - 0.149, gp[1] - 0.16 + k * 0.08, mSlot, false);
+      });
       slot(0.5, 4.2, 9.0, FL + CH2, 'x');
       slot(0.5, -5.2, 7.0, FL + CH, 'x');
       slot(12.0, 3.4, 5.0, FL + CH, 'x');
@@ -6663,7 +7064,7 @@ main:focus{outline:none}
       var downPts = [];
       function downs(x1, z1, x2, z2, nx, nz, y){
         for(var i=0;i<nx;i++) for(var j=0;j<nz;j++){
-          downPts.push([x1 + (x2-x1)*(i+0.5)/nx, y - 0.015, z1 + (z2-z1)*(j+0.5)/nz]);
+          downPts.push([x1 + (x2-x1)*(i+0.5)/nx, y - 0.14, z1 + (z2-z1)*(j+0.5)/nz]);   /* y = the slab top; its underside is 14 cm lower */
         }
       }
       downs(-5, -1, 7, 5.4, 5, 3, FL + CH2);
@@ -6679,37 +7080,101 @@ main:focus{outline:none}
       var downGeo = new T.CylinderGeometry(0.075, 0.075, 0.03, 10);
       var downMesh = new T.InstancedMesh(downGeo, mDown, downPts.length);
       var downM = new T.Matrix4(), downQ = new T.Quaternion(), downS = new T.Vector3(1,1,1);
+      /* a lens recessed 1 cm into the ceiling inside a slim white trim ring */
+      var ringGeo = new T.RingGeometry(0.074, 0.094, 20); ringGeo.rotateX(Math.PI / 2);
+      var ringMesh = new T.InstancedMesh(ringGeo, M(0xF6F4EF, 0.35, 0.2, { env:0.5 }), downPts.length);
       downPts.forEach(function(pt, i){
-        downM.compose(new T.Vector3(pt[0], pt[1], pt[2]), downQ, downS);
+        downM.compose(new T.Vector3(pt[0], pt[1] + 0.011, pt[2]), downQ, downS);
         downMesh.setMatrixAt(i, downM);
+        downM.compose(new T.Vector3(pt[0], pt[1] - 0.003, pt[2]), downQ, downS);
+        ringMesh.setMatrixAt(i, downM);
       });
-      downMesh.instanceMatrix.needsUpdate = true;
+      downMesh.instanceMatrix.needsUpdate = true; ringMesh.instanceMatrix.needsUpdate = true;
       downMesh.castShadow = false; downMesh.receiveShadow = false;
-      world.add(downMesh);
+      ringMesh.castShadow = false; ringMesh.receiveShadow = false;
+      world.add(downMesh); world.add(ringMesh);
     })();
+
+    /* ---------- mirrors ----------
+       A mirror has to show the room, not the sky. Each one is a plain grey glass
+       panel (used when it is far away, out of view or on a phone)
+       with a real reflection laid over it while it is one of the two nearest mirrors in
+       view: the scene is drawn once more from behind the glass, at half size, into a
+       small buffer that the panel shows (see updateMirrors). */
+    var MIRRORS = [];
+    var mMirrorSoft = M(0xE1E6E8, 0.10, 0.30, { env:0.22 });   /* a plain, pale-grey glass with no picture in it: a borrowed picture of another room looked wrong */
+    var mMirrorLive = new T.ShaderMaterial({
+      uniforms: { tMap: { value: null }, textureMatrix: { value: new T.Matrix4() } },
+      vertexShader: 'uniform mat4 textureMatrix; varying vec4 vUv;\nvoid main(){ vUv = textureMatrix * vec4(position, 1.0); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: 'uniform sampler2D tMap; varying vec4 vUv;\nvoid main(){ vec4 c = texture2DProj(tMap, vUv); gl_FragColor = vec4(c.rgb * vec3(0.93, 0.95, 0.95), 1.0); }'
+    });
+    /* w, h, d = the panel's size as bx() takes it (w is the thin side); dir = +1 or -1, the way it faces along x */
+    function mirrorBx(w, h, d, x, y, z, dir){
+      bx(w, h, d, x, y, z, mMirrorSoft, false);
+      var mat = mMirrorLive.clone();
+      mat.uniforms = { tMap: { value: null }, textureMatrix: { value: new T.Matrix4() } };
+      var pl = new T.Mesh(new T.PlaneGeometry(d - 0.02, h - 0.02), mat);
+      pl.position.set(x + dir * (w / 2 + 0.003), y, z);
+      pl.rotation.y = dir > 0 ? Math.PI / 2 : -Math.PI / 2;
+      pl.visible = false;
+      world.add(pl);
+      pl.updateMatrixWorld(true);
+      MIRRORS.push({ mesh: pl, rt: null, n: new T.Vector3(dir, 0, 0), c: pl.position.clone(), r: Math.hypot(d, h) / 2 });
+    }
 
     /* ---------- doors ---------- */
     var CHROOM = CH;
+    var DOORLEAVES = [];   /* where each open leaf stands (for tests only) */
     var DOORS = [];     /* every door, for click-to-walk-through (see DOORS AS DESTINATIONS) */
-    function walnutDoor(x, z, w, rotY, open, H){
+    /* Every door stands fully open, so the walk never passes through a leaf.
+       fz = which side of the wall the leaf is on (+1 or -1, in the door's own frame);
+       m  = which jamb the hinge is on (1 or -1);
+       flat (default true) = swung a full 180 degrees, lying against the wall beside the
+       opening; false = swung 90 degrees, for the two small en-suite doors whose side
+       walls are too short to hold a flat leaf. The sides were picked by a scene check
+       (nothing in the leaf's space) plus a walk check (every route keeps clear of it). */
+    function walnutDoor(x, z, w, rotY, fz, H, m, flat, off){
+      m = m || 1; if(flat === undefined) flat = true;
       var CH = H || CHROOM;   /* door height follows the room it sits in */
       DOORS.push({ x: x, z: z, w: w, rotY: rotY || 0, h: CH });
       var g = new T.Group();
       var leaf = new T.Mesh(new T.BoxGeometry(w, CH - 0.14, 0.055), mWalnut);
       leaf.castShadow = true; leaf.receiveShadow = true;
-      leaf.position.set(w/2, 0, 0);
+      leaf.position.set(m * w/2, 0, 0);
       var pivot = new T.Group();
       pivot.add(leaf);
-      pivot.rotation.y = (open || 0);
-      pivot.position.set(-w/2, 0, 0);
+      /* a lever handle on both faces and two hinges, so the walnut leaf
+         reads as a door and not as a panel */
+      [-1, 1].forEach(function(s){
+        var rose = new T.Mesh(new T.CylinderGeometry(0.027, 0.027, 0.012, 12), mSteel);
+        rose.rotation.x = Math.PI/2; rose.position.set(m * (w - 0.085), -0.53, s * 0.033); pivot.add(rose);
+        var lever = new T.Mesh(new T.CylinderGeometry(0.011, 0.011, 0.13, 8), mSteel);
+        lever.rotation.z = Math.PI/2; lever.position.set(m * (w - 0.15), -0.53, s * 0.062); pivot.add(lever);
+      });
+      [0.28, -0.55].forEach(function(hy){
+        var hinge = new T.Mesh(new T.CylinderGeometry(0.012, 0.012, 0.11, 8), mSteel);
+        hinge.position.set(m * 0.004, hy + CH * 0.32, 0); pivot.add(hinge);
+      });
+      pivot.rotation.y = flat ? Math.PI : -m * fz * 1.52;
+      DOORLEAVES.push({ w: w, rotY: rotY || 0, x: x, z: z, h: CH, fz: fz, m: m, flat: flat });
+      pivot.position.set(-m * w/2, 0, flat ? fz * (off || 0.19) : 0);   /* 0.19 (0.26 where the wall carries a proud tile panel): clears the casing, the skirting and the lever on the wall side */
       g.add(pivot);
-      /* the casing, which in this house is the same dark walnut */
-      g.add(new T.Mesh(new T.BoxGeometry(w + 0.22, 0.10, 0.16), mWalnut));
-      g.children[1].position.set(0, (CH - 0.14)/2 + 0.05, 0);
-      var j1 = new T.Mesh(new T.BoxGeometry(0.10, CH - 0.04, 0.16), mWalnut);
-      j1.position.set(-w/2 - 0.055, 0, 0); g.add(j1);
-      var j2 = new T.Mesh(new T.BoxGeometry(0.10, CH - 0.04, 0.16), mWalnut);
-      j2.position.set(w/2 + 0.055, 0, 0); g.add(j2);
+      /* painted trim, as in most houses: a dark casing on a dark leaf made
+         the doorway look like a framed picture hung on the wall */
+      g.add(new T.Mesh(new T.BoxGeometry(w + 0.20, 0.09, 0.15), mTrim));
+      g.children[g.children.length - 1].position.set(0, (CH - 0.14)/2 + 0.045, 0);
+      var j1 = new T.Mesh(new T.BoxGeometry(0.075, CH - 0.04, 0.15), mTrim);
+      j1.position.set(-w/2 - 0.0475, 0, 0); g.add(j1);
+      var j2 = new T.Mesh(new T.BoxGeometry(0.075, CH - 0.04, 0.15), mTrim);
+      j2.position.set(w/2 + 0.0475, 0, 0); g.add(j2);
+      [-1, 1].forEach(function(sf){   /* a light switch on the latch side, both faces */
+        var sw = new T.Mesh(new T.BoxGeometry(0.08, 0.12, 0.010), mTrim);
+        sw.position.set(m * (w / 2 + 0.17), FL + 1.10 - (CH - 0.14) / 2, sf * 0.115); g.add(sw);
+        var rk = new T.Mesh(new T.BoxGeometry(0.03, 0.05, 0.006), mBase);
+        rk.position.set(m * (w / 2 + 0.17), FL + 1.10 - (CH - 0.14) / 2, sf * 0.121); g.add(rk);
+      });
+      var sill = new T.Mesh(new T.BoxGeometry(w + 0.17, 0.006, 0.23), mMarble);   /* a flush stone threshold */
+      sill.position.set(0, -(CH - 0.14)/2 + 0.003, 0); g.add(sill);
       g.traverse(function(o){ if(o.isMesh){ o.castShadow = true; o.receiveShadow = true; } });
       g.position.set(x, FL + (CH - 0.14)/2, z);
       g.rotation.y = rotY || 0;
@@ -6717,16 +7182,16 @@ main:focus{outline:none}
       return g;
     }
 
-    walnutDoor( -6.00, -1.80, 1.05, Math.PI/2, -0.85); /* great room → gallery     */
-    walnutDoor(-10.00,  2.20, 1.05, Math.PI/2, -0.80); /* gallery → primary suite  */
-    walnutDoor(-12.70,  0.00, 1.05, 0,         -0.70); /* primary → dressing room  */
-    walnutDoor(-15.00, -2.90, 1.05, Math.PI/2, -0.90); /* dressing → primary bath  */
-    walnutDoor(-10.00, -8.60, 1.05, Math.PI/2, -0.60); /* gallery → bedroom 2      */
-    walnutDoor(-14.00, -9.40, 1.05, Math.PI/2, -0.50); /* bedroom 2 → en-suite     */
-    walnutDoor(  5.00,-11.40, 1.05, Math.PI/2, -0.70); /* foyer → powder room      */
-    walnutDoor( 11.00,-10.60, 1.05, Math.PI/2, -0.60); /* east hall → bedroom 3    */
-    walnutDoor( 11.00, -4.60, 1.05, Math.PI/2, -0.60); /* east hall → bedroom 4    */
-    walnutDoor( 10.00,-14.05, 1.05, 0,          0.70); /* east hall → flex room    */
+    walnutDoor( -6.00, -1.80, 1.05, Math.PI/2,  1, 0, 1); /* great room → gallery     */
+    walnutDoor(-10.00,  2.20, 1.05, Math.PI/2, -1, 0, 1); /* gallery → primary suite  */
+    walnutDoor(-12.70,  0.00, 1.05, 0,         -1, 0, -1); /* primary → dressing room  */
+    walnutDoor(-15.00, -2.90, 1.05, Math.PI/2, -1, 0, 1, true, 0.26); /* dressing → primary bath  */
+    walnutDoor(-10.00, -8.60, 1.05, Math.PI/2, -1, 0, -1); /* gallery → bedroom 2      */
+    walnutDoor(-14.00, -9.40, 1.05, Math.PI/2,  1, 0, 1); /* bedroom 2 → en-suite     */
+    walnutDoor(  5.00,-11.40, 1.05, Math.PI/2,  1, 0, 1); /* foyer → powder room      */
+    walnutDoor( 11.00,-10.60, 1.05, Math.PI/2, -1, 0, 1); /* east hall → bedroom 3    */
+    walnutDoor( 11.00, -4.60, 1.05, Math.PI/2, -1, 0, -1); /* east hall → bedroom 4    */
+    walnutDoor( 10.00,-14.05, 1.05, 0,          1, 0, 1); /* east hall → flex room    */
 
     /* ==================================================================
        INTERIORS
@@ -6760,42 +7225,39 @@ main:focus{outline:none}
       world.add(rug);
 
       /* the long cream sectional, facing the terrace */
-      function sofa(x, z, w, d, rot, mat){
+      function sofa(x, z, w, d, rot, mat, throwRug){
+        /* built from separate soft parts, as in the listing photo: a low body, a back rail, one seat cushion and
+           one leaning back cushion per seat with a visible gap between, and just a few loose pillows */
         var g = new T.Group();
-        g.add(new T.Mesh(roundGeo(w, 0.40, d, 0.10, 4), mat));       /* base */
-        g.children[0].position.y = 0.26;
-        var back = new T.Mesh(roundGeo(w, 0.62, 0.30, 0.13, 4), mat);
-        back.position.set(0, 0.70, -d/2 + 0.17);
-        g.add(back);
-        var n = Math.max(2, Math.round(w/1.0));
-        var accents = [mLinenLt, mBlush, mWhiteFab];
-        for(var i2=0;i2<n;i2++){
-          var cu = new T.Mesh(roundGeo(w/n - 0.06, 0.20, d - 0.34, 0.09, 4), mat);
-          cu.position.set(-w/2 + w/n*(i2+0.5), 0.55, 0.06);
-          g.add(cu);
-          /* a pile of two overlapping throw pillows, not one centred and
-             square-on — a single flat cushion per seat is the surest CG
-             tell against a real staged sofa, which is always layered */
-          var cx = -w/2 + w/n*(i2+0.5);
-          var back2 = new T.Mesh(roundGeo(0.46, 0.46, 0.16, 0.09, 4), accents[i2 % accents.length]);
-          back2.position.set(cx - 0.12, 0.86, -d/2 + 0.38);
-          back2.rotation.set(-0.20, 0.18, 0.06);
-          g.add(back2);
-          var front2 = new T.Mesh(roundGeo(0.40, 0.40, 0.15, 0.09, 4), mLinenLt);
-          front2.position.set(cx + 0.14, 0.80, -d/2 + 0.30);
-          front2.rotation.set(-0.28, -0.14, -0.05);
-          g.add(front2);
+        function part(geo, m, px, py, pz, rx, ry, rz){
+          var o = new T.Mesh(geo, m); o.position.set(px, py, pz);
+          if(rx || ry || rz) o.rotation.set(rx || 0, ry || 0, rz || 0);
+          g.add(o); return o;
         }
+        part(roundGeo(w, 0.34, d, 0.11, [6, 3, 6]), mat, 0, 0.23, 0);                      /* body      */
+        part(roundGeo(w, 0.50, 0.24, 0.11, [6, 4, 3]), mat, 0, 0.62, -d/2 + 0.12);        /* back rail */
+        var n = Math.max(2, Math.round(w/1.0)), sw = w/n;
+        var accents = [mSage, mBlush, mLinenLt, mNavy];
+        for(var i2 = 0; i2 < n; i2++){
+          var cx = -w/2 + sw*(i2 + 0.5);
+          part(puffGeo(sw - 0.05, 0.17, d - 0.30, 0.07, 0.055), mat, cx, 0.49, 0.08);          /* seat cushion */
+          part(puffGeo(sw - 0.05, 0.42, 0.20, 0.09, 0.05), mat, cx, 0.82, -d/2 + 0.31, -0.17); /* back cushion */
+        }
+        /* a loose pillow on some seats only, each leaning at its own angle */
+        [[0, 0.22, 0.10, 0.20, 0], [Math.floor(n/2), -0.16, 0.14, -0.22, 2], [n - 1, 0.10, 0.08, 0.18, 1]].forEach(function(pl){
+          if(pl[0] >= n) return;
+          var pcx = -w/2 + sw*(pl[0] + 0.5) + pl[1];
+          part(puffGeo(0.42, 0.42, 0.14, 0.08, 0.05), accents[pl[4] % accents.length], pcx, 0.86, -d/2 + 0.48, -0.30, pl[3], pl[2] - 0.10);
+        });
+        if(throwRug) part(puffGeo(0.55, 0.05, 1.20, 0.02, 0.02, 0.012), mBlush, w/2 - 0.60, 0.585, 0.06, 0, 0.10, 0.02);   /* a folded throw */
         /* a recessed dark plinth — the base sat 6cm above the floor on nothing */
-        var plinth = new T.Mesh(new T.BoxGeometry(w - 0.24, 0.07, d - 0.24), mBlack);
-        plinth.position.y = 0.035;
-        g.add(plinth);
+        part(new T.BoxGeometry(w - 0.24, 0.07, d - 0.24), mBlack, 0, 0.035, 0);
         g.traverse(function(o){ if(o.isMesh){ o.castShadow = true; o.receiveShadow = true; } });
         g.position.set(x, FL, z);
         g.rotation.y = rot;
         world.add(g);
       }
-      sofa(-1.4, 4.5, 5.0, 1.15, Math.PI, mLinen);
+      sofa(-1.4, 4.5, 5.0, 1.15, Math.PI, mLinen, true);
       sofa(-4.2, 2.0, 3.4, 1.10, Math.PI/2, mLinen);
 
       /* the two teal velvet chairs with brass legs */
@@ -6828,6 +7290,18 @@ main:focus{outline:none}
         bx(0.035, 0.40, 0.035, p[0], FL + 0.20, p[1], mChrome);
       });
       bx(0.26, 0.10, 0.26, -1.9, FL + 0.47, 2.7, M(0xB8703C, 0.4, 0.1, { env:0.7 }), false);
+      /* white ceramic vases: turned (lathe) shapes with a glossy glaze, on the table and on the media cabinet */
+      var mCeramic = M(0xF1EFEA, 0.22, 0.0, { env:0.9 });
+      function vase(prof, x, y, z, sc){
+        var o = new T.Mesh(new T.LatheGeometry(prof.map(function(q){ return new T.Vector2(q[0] * sc, q[1] * sc); }), 22), mCeramic);
+        o.position.set(x, y, z); o.castShadow = true; o.receiveShadow = true; world.add(o);
+      }
+      var VASE_A = [[0,0],[0.055,0],[0.085,0.05],[0.098,0.11],[0.075,0.19],[0.038,0.26],[0.034,0.32],[0.048,0.345],[0.040,0.348],[0.028,0.335]];
+      var VASE_B = [[0,0],[0.06,0],[0.11,0.05],[0.115,0.11],[0.09,0.16],[0.06,0.185],[0.07,0.195],[0.062,0.198],[0.05,0.19]];
+      vase(VASE_A, -1.45, FL + 0.4175, 2.55, 1.0);
+      vase(VASE_B, -1.18, FL + 0.4175, 2.92, 0.85);
+      vase(VASE_A, -5.80, FL + 0.775, 3.0, 0.9);      /* on the media cabinet */
+      vase(VASE_B, -5.80, FL + 0.775, 3.5, 1.1);
       /* styling only: a short stack of plain cloth-bound books, the kind of
          thing a stylist leaves on a table for a shoot (NEEDS CRISTINA: generic
          staging, implies nothing about the property) */
@@ -6907,12 +7381,18 @@ main:focus{outline:none}
       }
 
       /* the veined stone panel and the wavy chrome mirror on the east wall */
-      bx(0.05, 2.9, 3.4, 7.92, FL + 1.55, 3.0, mMarble, false);
+      /* on the solid stretch of the partition beside the kitchen entrance
+         (z -1.9 to 1.15), not across the opening itself */
+      bx(0.05, 2.9, 3.05, 7.855, FL + 1.55, -0.375, mMarble, false);
       var mir = new T.Mesh(roundGeo(0.09, 1.9, 0.75, 0.32, 5), mChrome);
-      mir.position.set(7.80, FL + 1.75, 1.3);
+      mir.position.set(7.80, FL + 1.75, -0.4);
       mir.castShadow = true;
       world.add(mir);
 
+      /* a low bowl and two bud vases on the table (styling only) */
+      decorBowl(4.55, FL + 0.7775, 3.0, 0.20, 0.085, mBrass);
+      ceramicVase(PROF_B, 6.55, FL + 0.7775, 2.80, 0.55);
+      ceramicVase(PROF_A, 6.68, FL + 0.7775, 3.16, 0.50);
       /* a vase of roses on the table, as styled in the photograph */
       cyl(0.085, 0.065, 0.26, 5.9, FL + 0.90, 3.0, mGlass, 12);
       for(var r2=0;r2<9;r2++){
@@ -6928,21 +7408,28 @@ main:focus{outline:none}
       var Z0 = -1.7, Z1 = 5.7, X0 = 8.2, X1 = 15.8;
 
       /* full-height ash cabinetry on the east wall, with the ovens */
-      bx(0.62, CH - 0.12, 5.2, X1 - 0.31, FL + (CH-0.12)/2, 2.4, mAshV);
+      bx(0.62, CH - 0.12, 5.2, X1 - 0.31, FL + (CH-0.12)/2, 2.4, mCab);
+      /* door and drawer joints, as in the listing photo: the wall is a run of separate doors, not one panel */
+      var mGroove = M(0x4A4036, 0.7, 0.0, {});
+      [0.35, 1.65, 2.30, 2.95, 3.60, 4.25].forEach(function(gz){
+        bx(0.012, CH - 0.16, 0.012, X1 - 0.624, FL + (CH-0.12)/2, gz, mGroove, false);
+      });
+      bx(0.012, 0.012, 5.2, X1 - 0.624, FL + 2.25, 2.4, mGroove, false);
+      bx(0.012, 0.012, 3.35, X1 - 0.624, FL + 0.55, 3.325, mGroove, false);
       bx(0.06, 0.66, 0.78, X1 - 0.64, FL + 1.62, 1.0, mSteel, false);
       bx(0.06, 0.60, 0.78, X1 - 0.64, FL + 0.92, 1.0, mSteel, false);
       bx(0.05, 0.10, 0.70, X1 - 0.68, FL + 1.34, 1.0, mChrome, false);
       bx(0.05, 0.10, 0.70, X1 - 0.68, FL + 0.66, 1.0, mChrome, false);
 
       /* the run with the cooktop, under the chimney hood */
-      bx(3.6, 0.88, 0.64, 12.4, FL + 0.44, Z0 + 0.32, mAsh);
+      bx(3.6, 0.88, 0.64, 12.4, FL + 0.44, Z0 + 0.32, mCab);
       bx(3.7, 0.045, 0.68, 12.4, FL + 0.91, Z0 + 0.32, mQuartz);
       bx(0.92, 0.02, 0.50, 12.4, FL + 0.94, Z0 + 0.32, mBlack, false);
       for(var bn=0;bn<5;bn++){
         cyl(0.075, 0.075, 0.03, 11.98 + bn*0.21, FL + 0.955, Z0 + 0.32, mSteel, 10);
       }
       /* the leaf-relief backsplash */
-      bx(3.7, 1.12, 0.03, 12.4, FL + 1.50, Z0 + 0.015, mLeaf, false);
+      bx(3.7, 1.12, 0.03, 12.4, FL + 1.50, Z0 + 0.015, M(0xD9D3C7, 0.42, 0.0, { env:0.4 }), false);   /* light greige, as in the listing photo */
       /* the stainless chimney hood */
       bx(0.95, 0.30, 0.56, 12.4, FL + 2.06, Z0 + 0.30, mSteel);
       bx(0.34, 0.86, 0.34, 12.4, FL + 2.64, Z0 + 0.18, mSteel);
@@ -6951,19 +7438,36 @@ main:focus{outline:none}
       bx(1.15, 0.78, 0.38, 13.9, FL + 2.24, Z0 + 0.20, M(0xF4F3EF, 0.5, 0.0, { env:0.45 }));
 
       /* the galley run with the sink, along the west partition */
-      bx(0.62, 0.88, 4.0, X0 + 0.31, FL + 0.44, 3.4, mAsh);
-      bx(0.66, 0.045, 4.1, X0 + 0.31, FL + 0.91, 3.4, mQuartz);
-      bx(0.40, 0.03, 0.62, X0 + 0.34, FL + 0.925, 3.9, mSteel, false);
-      cyl(0.016, 0.016, 0.30, X0 + 0.14, FL + 1.08, 3.9, mChrome, 10);
+      /* the run stops short of the wall (z 2.9 to 5.4) so the north end of
+         the opening in the partition is a real walk-in entrance */
+      bx(0.62, 0.88, 2.5, X0 + 0.31, FL + 0.44, 4.15, mCab);
+      bx(0.66, 0.045, 2.6, X0 + 0.31, FL + 0.91, 4.15, mQuartz);
+      /* a stainless sink let into the worktop: slim rim, dark recessed basin, drain, and an arched tap */
+      var mSinkIn = M(0x55595B, 0.35, 0.6, { env:0.4 });
+      var SX = X0 + 0.34, SZ = 3.9, ST = FL + 0.9375;
+      bx(0.46, 0.012, 0.68, SX, ST + 0.006, SZ, mSteel, false);
+      bx(0.40, 0.004, 0.62, SX, ST + 0.013, SZ, mSinkIn, false);
+      cyl(0.03, 0.03, 0.004, SX, ST + 0.016, SZ, mBlack, 12);
+      cyl(0.016, 0.016, 0.26, X0 + 0.11, ST + 0.13, SZ, mChrome, 10);
+      var tapArc = new T.Mesh(new T.TorusGeometry(0.11, 0.014, 8, 14, Math.PI), mChrome);
+      tapArc.position.set(X0 + 0.22, ST + 0.26, SZ); world.add(tapArc);
+      cyl(0.014, 0.014, 0.10, X0 + 0.33, ST + 0.21, SZ, mChrome, 10);
 
       /* the big square entertainment island — the room's centrepiece */
       contact(12.0, 2.6, 4.2, 3.6);
-      bx(2.55, 0.86, 2.40, 12.0, FL + 0.43, 2.6, mAsh);
+      bx(2.55, 0.86, 2.40, 12.0, FL + 0.43, 2.6, mCab);
       bx(2.95, 0.075, 2.80, 12.0, FL + 0.90, 2.6, mQuartz);
+      /* a fruit bowl and a cutting board on the island (styling only) */
+      decorBowl(12.45, FL + 0.9375, 3.35, 0.21, 0.10, mCeramicG);
+      [[0xD9822B, -0.06, 0.05, 0.03], [0xB5C24A, 0.07, 0.06, -0.02], [0xC9412F, 0.0, 0.04, 0.10], [0xD9822B, -0.02, 0.10, -0.06]].forEach(function(f){
+        var fr = new T.Mesh(new T.SphereGeometry(0.048, 10, 8), M(f[0], 0.6, 0.0, { env:0.3 }));
+        fr.position.set(12.45 + f[1], FL + 0.9375 + f[2] + 0.02, 3.35 + f[3]); fr.castShadow = true; world.add(fr);
+      });
+      bx(0.44, 0.022, 0.30, 11.35, FL + 0.9485, 3.30, mAshV, false);
       /* stools: three along the west face, two on the south */
       function stool(x, z, rot){
         var g = new T.Group();
-        var s2 = new T.Mesh(roundGeo(0.42, 0.09, 0.40, 0.05, 3), mLeather);
+        var s2 = new T.Mesh(puffGeo(0.42, 0.09, 0.40, 0.05, 0.015), mLeather);
         s2.position.y = 0.66; g.add(s2);
         var b3 = new T.Mesh(roundGeo(0.42, 0.46, 0.09, 0.05, 3), mLeather);
         b3.position.set(0, 0.92, -0.17); b3.rotation.x = -0.14; g.add(b3);
@@ -6982,15 +7486,8 @@ main:focus{outline:none}
       stool(12.6, 4.35, Math.PI);
 
       /* a plant on the galley counter, as photographed */
-      cyl(0.11, 0.09, 0.22, X0 + 0.34, FL + 1.04, 1.9, M(0xE8E4DC, 0.6, 0, { env:0.4 }), 12);
-      for(var lf=0;lf<7;lf++){
-        var leaf = new T.Mesh(new T.SphereGeometry(0.15, 7, 5), mFoliage2);
-        leaf.scale.set(1, 0.32, 0.65);
-        leaf.position.set(X0 + 0.34 + (Math.random()-0.5)*0.3, FL + 1.24 + Math.random()*0.22,
-                          1.9 + (Math.random()-0.5)*0.3);
-        leaf.rotation.set(Math.random(), Math.random()*6.28, Math.random());
-        world.add(leaf);
-      }
+      cyl(0.11, 0.09, 0.22, X0 + 0.34, FL + 1.04, 3.2, M(0xE8E4DC, 0.6, 0, { env:0.4 }), 12);
+      leafyPlant(X0 + 0.34, FL + 1.15, 3.2, { n: 13, h: 0.30, scale: 0.85, stems: 2, lean: 0.10 });
     })();
 
     /* ---------- primary suite ---------- */
@@ -7006,6 +7503,7 @@ main:focus{outline:none}
       var BX = -15.0, BZ = 2.2;
       bx(2.10, 0.34, 2.20, BX, FL + 0.21, BZ + 0.9, mAsh);              /* base */
       bx(2.20, 0.30, 0.10, BX, FL + 0.62, BZ - 0.15, mAsh);             /* headboard rail */
+      rbx(1.98, 0.70, 0.10, BX, FL + 0.90, BZ - 0.10, mGreige, 0.05, undefined, 0.035);   /* padded headboard */
       for(var p=0;p<4;p++){
         var px = BX + (p%2 ? 1.06 : -1.06), pz = BZ + (p<2 ? -0.10 : 1.96);
         bx(0.075, 2.05, 0.075, px, FL + 1.03, pz, mAsh);
@@ -7015,13 +7513,9 @@ main:focus{outline:none}
       bx(0.07, 0.07, 2.13, BX - 1.06, FL + 2.02, BZ + 0.93, mAsh);
       bx(0.07, 0.07, 2.13, BX + 1.06, FL + 2.02, BZ + 0.93, mAsh);
       /* the bedding: white duvet, blush throw, navy and cream pillows */
-      rbx(2.02, 0.26, 2.05, BX, FL + 0.50, BZ + 0.95, mWhiteFab, 0.07);
-      rbx(2.04, 0.13, 0.66, BX, FL + 0.66, BZ + 1.62, mBlush, 0.06);
-      rbx(0.62, 0.20, 0.30, BX - 0.50, FL + 0.74, BZ + 0.16, mWhiteFab, 0.09);
-      rbx(0.62, 0.20, 0.30, BX + 0.50, FL + 0.74, BZ + 0.16, mWhiteFab, 0.09);
-      rbx(0.44, 0.17, 0.22, BX - 0.34, FL + 0.86, BZ + 0.34, mLinenLt, 0.07);
-      rbx(0.44, 0.17, 0.22, BX + 0.34, FL + 0.86, BZ + 0.34, mLinenLt, 0.07);
-      rbx(0.36, 0.14, 0.18, BX, FL + 0.90, BZ + 0.50, mNavy, 0.06);
+      var bd = makeBedding(2.10, 2.02, 2.20, 5);
+      bd.position.set(BX, FL + 0.38, BZ - 0.20);
+      world.add(bd);
 
       /* bedside tables */
       bx(0.52, 0.48, 0.42, BX - 1.52, FL + 0.24, BZ + 0.30, mAsh);
@@ -7071,13 +7565,16 @@ main:focus{outline:none}
          standard 0.915m (it sat at 1.215m, chest height, taller than the
          kitchen worktops); the basin sits proud of the counter instead of
          exactly flush with it, which flickered */
-      bx(0.58, 0.54, 3.4, -19.66, FL + 0.60, -3.4, mAsh);
+      bx(0.58, 0.54, 3.4, -19.66, FL + 0.60, -3.4, mCab);
+      vanityReveals(-19.372, -3.4, 3.4, FL + 0.60, 0.54);
       bx(0.64, 0.05, 3.5, -19.66, FL + 0.89, -3.4, mQuartz);
-      bx(0.40, 0.03, 0.62, -19.62, FL + 0.932, -3.9, M(0xFCFBF8, 0.22, 0, { env:0.8 }), false);
+      makeBasin(-19.62, FL + 0.915, -3.9, 0.20, 0.31);
+      soapBottle(-19.50, FL + 0.915, -4.62);
+      towelRolls(-19.52, FL + 0.915, -2.55);
       cyl(0.016, 0.016, 0.22, -19.86, FL + 1.03, -3.9, mChrome, 10);
       bx(0.05, 0.05, 0.16, -19.78, FL + 1.12, -3.9, mChrome, false);
       /* the frameless mirror above it, and two vertical sconces */
-      bx(0.03, 1.55, 3.4, -19.91, FL + 1.78, -3.4, M(0xDDE4E6, 0.03, 0.9, { env:1.5 }), false);
+      mirrorBx(0.03, 1.55, 3.4, -19.91, FL + 1.78, -3.4, 1);
       bx(0.07, 0.62, 0.10, -19.84, FL + 1.95, -1.9, mAmber, false);
       bx(0.07, 0.62, 0.10, -19.84, FL + 1.95, -1.25, mAmber, false);
       glow(-19.80, FL + 1.95, -1.9, 0.36, 0xFFE0AC, 0.40);
@@ -7092,25 +7589,15 @@ main:focus{outline:none}
       bx(1.85, CH - 0.2, 0.04, -16.05, FL + (CH-0.2)/2, -5.83, mBlue, false);
       slab(-17.0, -5.9, -15.1, -4.1, 0.03, FL + 0.02, mBlue, false);
       bx(0.05, CH - 0.3, 1.85, -17.0, FL + (CH-0.3)/2, -5.0, mGlass, false);
-      bx(0.06, 0.20, 0.06, -15.5, FL + 2.30, -4.9, mChrome, false);
-      cyl(0.09, 0.09, 0.03, -15.5, FL + 2.18, -4.9, mChrome, 12);
+      rainShower(-16.05, -5.0, -5.81);
 
       /* a freestanding tub under the window */
-      var tub = new T.Mesh(roundGeo(1.65, 0.56, 0.78, 0.26, 5), M(0xFCFBF8, 0.14, 0.0, { env:0.9 }));
-      tub.position.set(-17.2, FL + 0.30, -0.9);
-      tub.castShadow = true; tub.receiveShadow = true;
-      world.add(tub);
+      makeTub(-17.2, -0.9, 1.65, 0.78, 0.56);
       contact(-17.2, -0.9, 2.3, 1.4);
 
       /* eucalyptus in a glass cylinder, exactly as styled */
       cyl(0.10, 0.085, 0.34, -19.6, FL + 1.38, -4.6, mGlass, 14);
-      for(var e=0;e<16;e++){
-        var lf = new T.Mesh(new T.SphereGeometry(0.058, 6, 5), M(0x8FA08A, 0.9, 0, { env:0.2 }));
-        lf.scale.set(1, 0.42, 1);
-        var a = Math.random()*6.283, r = Math.random()*0.32;
-        lf.position.set(-19.6 + Math.cos(a)*r, FL + 1.62 + Math.random()*0.42, -4.6 + Math.sin(a)*r);
-        world.add(lf);
-      }
+      leafyPlant(-19.6, FL + 1.44, -4.6, { n: 34, h: 0.62, scale: 1.0, stems: 4, lean: 0.20, round: true, hue: 0.30, sat: 0.16, light: 0.38, upright: true });
     })();
 
     /* ---------- guest rooms, closet, powder, foyer ---------- */
@@ -7119,29 +7606,56 @@ main:focus{outline:none}
         var g = new T.Group();
         g.add(new T.Mesh(new T.BoxGeometry(1.72, 0.36, 2.05), mAsh));   /* down to the floor */
         g.children[0].position.y = 0.18;
-        g.add(new T.Mesh(new T.BoxGeometry(1.80, 0.85, 0.10), mAsh));
+        g.add(new T.Mesh(puffGeo(1.80, 0.80, 0.10, 0.05, 0.035), mGreige));   /* upholstered headboard */
         g.children[1].position.set(0, 0.60, -1.05);
-        var duv = new T.Mesh(roundGeo(1.66, 0.24, 1.92, 0.06, 4), mWhiteFab);
-        duv.position.y = 0.47; g.add(duv);
-        var th = new T.Mesh(roundGeo(1.68, 0.11, 0.60, 0.05, 4), mBlush);
-        th.position.set(0, 0.61, 0.60); g.add(th);
-        var p1 = new T.Mesh(roundGeo(0.56, 0.18, 0.28, 0.08, 4), mWhiteFab);
-        p1.position.set(-0.42, 0.68, -0.76); g.add(p1);
-        var p2 = new T.Mesh(roundGeo(0.56, 0.18, 0.28, 0.08, 4), mWhiteFab);
-        p2.position.set(0.42, 0.68, -0.76); g.add(p2);
-        var p3 = new T.Mesh(roundGeo(0.34, 0.13, 0.17, 0.05, 4), mNavy);
-        p3.position.set(0, 0.74, -0.60); g.add(p3);
+        var bd = makeBedding(1.72, 1.80, 2.05, 3);
+        bd.position.set(0, 0.36, -1.025);
+        g.add(bd);
         g.traverse(function(o){ if(o.isMesh){ o.castShadow = true; o.receiveShadow = true; } });
         g.position.set(x, FL, z); g.rotation.y = rot;
         world.add(g);
         contact(x, z, 2.8, 3.0);
       }
-      guestBed(-12.0, -9.4, 0);          /* bedroom 2 */
-      guestBed(13.0, -11.0, 0);          /* bedroom 3 */
-      guestBed(13.0, -5.0, 0);           /* bedroom 4 */
+      guestBed(-12.0, -11.83, 0);         /* bedroom 2: headboard 3 cm from the north wall */
+      guestBed(13.0, -12.83, 0);          /* bedroom 3 */
+      guestBed(13.0, -6.76, 0);           /* bedroom 4 */
 
       /* the walk-in closet: open ash joinery */
-      bx(0.52, CH - 0.2, 5.4, -10.4, FL + (CH-0.2)/2, -3.0, mAshV);
+      var mGroove2 = M(0x4A4036, 0.7, 0.0, {});
+      (function closetShelving(){
+        var X = -10.40, H = CH - 0.2, BAYS = [-5.025, -3.675, -2.325, -0.975], L = 1.31;
+        [-5.7, -4.35, -3.0, -1.65, -0.3].forEach(function(uz){ bx(0.50, H, 0.04, X, FL + H/2, uz, mAshV); });
+        bx(0.50, 0.08, 5.4, X, FL + 0.04, -3.0, mAshV);        /* plinth   */
+        bx(0.52, 0.03, 5.4, X, FL + H - 0.015, -3.0, mAsh, false); /* top      */
+        function shelf(y, bz){ bx(0.50, 0.03, L, X, FL + y, bz, mAsh, false); }
+        function stack(y, bz, dz, n, m){ for(var i = 0; i < n; i++) bx(0.36, 0.05, 0.30, X, FL + y + 0.015 + i * 0.05 + 0.025, bz + dz, m, false); }
+        /* bay 1: shelves with folded knitwear */
+        [0.32, 0.82, 1.32, 1.82, 2.32, 2.78].forEach(function(y){ shelf(y, BAYS[0]); });
+        stack(0.32, BAYS[0], -0.40, 6, mLinen); stack(0.32, BAYS[0], 0.05, 5, mLinenLt); stack(0.82, BAYS[0], -0.40, 4, mBlush);
+        stack(0.82, BAYS[0], 0.05, 6, mLinen); stack(1.32, BAYS[0], -0.05, 5, mNavy); stack(1.82, BAYS[0], -0.40, 4, mLinenLt); stack(1.82, BAYS[0], 0.20, 5, mLinen);
+        /* bay 2: two hanging rails with garments, shoe shelf below */
+        shelf(0.32, BAYS[1]); shelf(0.72, BAYS[1]); shelf(2.60, BAYS[1]);
+        [1.95, 1.05].forEach(function(ry){ cyl(0.015, 0.015, L - 0.06, X, FL + ry, BAYS[1], mChrome, 8).rotation.x = Math.PI / 2; });
+        [[1.95, 0.85], [1.05, 0.72]].forEach(function(r){
+          for(var k = 0; k < 11; k++){
+            var gm = [mLinenLt, mLinen, mNavy, mWhiteFab, mBlush][k % 5];
+            bx(0.20, r[1], 0.045, X, FL + r[0] - r[1] / 2 - 0.05, BAYS[1] - L / 2 + 0.10 + k * 0.105, gm, false);
+          }
+        });
+        /* bay 3: drawers below, shelves above */
+        for(var d = 0; d < 3; d++){
+          bx(0.03, 0.29, L - 0.02, X - 0.235, FL + 0.19 + d * 0.31, BAYS[2], mAshV);
+          bx(0.012, 0.012, L - 0.02, X - 0.253, FL + 0.335 + d * 0.31, BAYS[2], mGroove2, false);
+          bx(0.02, 0.02, 0.36, X - 0.255, FL + 0.26 + d * 0.31, BAYS[2], mBrass, false);
+        }
+        bx(0.50, 0.03, L, X, FL + 1.10, BAYS[2], mAsh, false);
+        [1.60, 2.10, 2.60].forEach(function(y){ shelf(y, BAYS[2]); });
+        stack(1.10, BAYS[2], -0.20, 5, mWhiteFab); stack(1.60, BAYS[2], 0.15, 4, mBlush); stack(2.10, BAYS[2], -0.30, 6, mLinen);
+        /* bay 4: shelves for bags and boxes */
+        [0.40, 0.95, 1.50, 2.05, 2.60].forEach(function(y){ shelf(y, BAYS[3]); });
+        stack(0.40, BAYS[3], -0.30, 3, mLinenLt); stack(0.95, BAYS[3], 0.20, 4, mNavy); stack(1.50, BAYS[3], -0.10, 5, mLinen);
+        bx(0.34, 0.24, 0.55, X, FL + 2.05 + 0.135, BAYS[3] + 0.1, mBlack, false);   /* a box on the shelf */
+      })();
       /* two runs either side of the bathroom doorway — one continuous run
          crossed the doorway and the door swung through it */
       [[-4.735, 2.23], [-1.155, 2.05]].forEach(function(run){
@@ -7155,29 +7669,44 @@ main:focus{outline:none}
       /* the herringbone and mirror sat inside the wall (invisible) and the
          basin hung 4cm clear of it — all brought forward onto the wall face */
       bx(0.50, 0.14, 1.20, 7.595, FL + 0.88, -11.5, mMarble);
-      bx(0.05, 1.25, 1.10, 7.82, FL + 1.70, -11.5, M(0xDDE4E6, 0.03, 0.9, { env:1.5 }), false);
+      mirrorBx(0.05, 1.25, 1.10, 7.82, FL + 1.70, -11.5, -1);
       cyl(0.015, 0.015, 0.24, 7.76, FL + 1.06, -11.5, mChrome, 10);
       bx(0.05, CH - 0.1, 3.0, 7.87, FL + (CH-0.1)/2, -11.5, mHerring, false);
 
-      /* the planted entry courtyard you see straight through on arrival */
-      slab(-5.9, -12.9, -4.1, -8.1, 0.2, FL + 0.06, mSoil, false);
-      for(var b=0;b<9;b++){
-        var sh = new T.Mesh(new T.SphereGeometry(0.32, 8, 6), mHedge);
-        sh.scale.set(1.1, 0.8, 1.1);
-        sh.position.set(-5.6 + Math.random()*1.2, FL + 0.32, -12.4 + Math.random()*4.0);
-        sh.castShadow = true; world.add(sh);
+      /* the planted entry courtyard you see straight through on arrival: a warm timber-slat wall, a pale pebble
+         bed with river boulders, planting in layers (tall broad leaves at the back, arching ones in front, low
+         ground cover) and a leafy canopy tree. Styling only (NEEDS CRISTINA). Plants use the light 16-triangle leaf. */
+      var texPebble = mkTex('pebble', 256, 256, function(g, w, h){
+        base(g, w, h, '#B4AEA1');
+        for(var q = 0; q < 520; q++){
+          var r = 4 + Math.random() * 7, v = 150 + Math.random() * 85 | 0;
+          g.fillStyle = 'rgb(' + v + ',' + (v - 4) + ',' + (v - 12) + ')';
+          g.beginPath(); g.ellipse(Math.random() * w, Math.random() * h, r, r * (0.6 + Math.random() * 0.3), Math.random() * 3, 0, 6.283); g.fill();
+          g.strokeStyle = 'rgba(60,55,48,0.35)'; g.lineWidth = 1; g.stroke();
+        }
+      }, 3, 8);
+      slab(-5.9, -12.9, -4.1, -8.1, 0.2, FL + 0.06, M(0xFFFFFF, 0.92, 0.0, { map:texPebble, bump:0.05, env:0.2 }), false);
+      /* the timber-slat wall on the court side of the gallery wall, over a dark backing so the gaps read as depth */
+      bx(0.02, 2.9, 4.8, -5.885, FL + 1.5, -10.5, M(0x3B342C, 0.8, 0.0, {}), false);
+      for(var sl = 0; sl < 44; sl++) bx(0.035, 2.85, 0.055, -5.862, FL + 1.5, -12.85 + sl * 0.107, mCab, false);
+      var mBoulder = M(0x94918A, 0.86, 0.0, { env:0.2 });
+      [[-4.65, -11.7, 0.24], [-5.35, -9.0, 0.19], [-4.85, -12.4, 0.17], [-4.55, -8.6, 0.15]].forEach(function(bd){
+        var st = new T.Mesh(new T.SphereGeometry(bd[2], 10, 8), mBoulder);
+        st.scale.set(1.15, 0.62, 1.0); st.position.set(bd[0], FL + 0.06 + bd[2] * 0.42, bd[1]); st.castShadow = true; st.receiveShadow = true; world.add(st);
+      });
+      var CY = FL + 0.06;
+      [-12.45, -11.55, -9.55, -8.65].forEach(function(z){      /* the back layer: tall, broad and glossy */
+        leafyPlant(-5.50, CY, z, { n: 70, h: 1.20 + Math.random() * 0.35, scale: 1.6, stems: 5, lean: 0.20, broad: true, upright: true, hue: 0.31, light: 0.20, low: true });
+      });
+      [-12.2, -10.9, -9.6, -8.55].forEach(function(z){         /* the middle layer: arching */
+        leafyPlant(-4.80, CY, z, { n: 50, h: 0.70 + Math.random() * 0.25, scale: 1.3, stems: 5, lean: 0.36, hue: 0.27, light: 0.29, low: true });
+      });
+      for(var gc = 0; gc < 10; gc++){                          /* low ground cover between them */
+        leafyPlant(-5.55 + Math.random() * 1.35, CY, -12.5 + Math.random() * 4.2, { n: 22, h: 0.18 + Math.random() * 0.1, scale: 0.85, stems: 3, lean: 0.9, hue: 0.25, light: 0.31, low: true });
       }
-      /* A slim ornamental tree, not a palm: the light court is only 1.8m
-         wide and a palm crown is wider than that, so its fronds came out
-         through the walls into the foyer. */
-      cyl(0.055, 0.075, 2.05, -5.0, FL + 1.10, -10.4, mTrunk, 8);
-      for(var t2=0;t2<9;t2++){
-        var puff = new T.Mesh(new T.SphereGeometry(0.30 + Math.random()*0.12, 8, 6), t2%2 ? mFoliage : mFoliage2);
-        var pa = Math.random()*6.283, pr = Math.random()*0.34;
-        puff.scale.set(1, 0.72, 1);
-        puff.position.set(-5.0 + Math.cos(pa)*pr, FL + 2.05 + Math.random()*0.46, -10.4 + Math.sin(pa)*pr);
-        puff.castShadow = true; world.add(puff);
-      }
+      /* a slim ornamental tree: leaning trunk, leafy canopy (the court is only 1.8 m wide, so the crown stays inside it) */
+      cyl(0.05, 0.075, 1.85, -5.0, FL + 0.99, -10.4, mTrunk, 8);
+      leafyPlant(-5.0, FL + 1.80, -10.4, { n: 170, h: 0.85, scale: 2.7, stems: 7, lean: 0.62, round: true, hue: 0.27, light: 0.26, low: true });
       /* glazing between the courtyard and the foyer */
       bx(0.05, CH - 0.3, 4.6, -4.0, FL + (CH-0.3)/2, -10.5, mGlass, false);
       bx(0.10, CH, 0.12, -4.0, FL + CH/2, -12.7, mBronze);
@@ -7196,46 +7725,103 @@ main:focus{outline:none}
        in it reads as a model rather than a house. This section builds the
        guest bathrooms and dresses every space.
        ================================================================== */
-    function artTex(key, bg, t1, t2){
-      return mkTex(key, 256, 256, function(g,w,h){
-        base(g,w,h,bg);
-        for(var i=0;i<24;i++){
-          g.fillStyle = (i%2 ? t1 : t2).replace('A', (0.06 + Math.random()*0.30).toFixed(2));
-          g.beginPath();
-          g.ellipse(Math.random()*w, Math.random()*h,
-                    12 + Math.random()*72, 9 + Math.random()*52,
-                    Math.random()*3.14, 0, 6.283);
-          g.fill();
-        }
-      }, 1, 1, 0);
+    /* ---- the paintings: five abstract canvases in the house's own palette (sage, blush, navy, clay, cream).
+       Drawn with bristle strokes, soft edges and a canvas weave; the picture's own light and dark also
+       becomes the bump, so brush ridges catch the light. Concept styling, not a fact about the property
+       (NEEDS CRISTINA: generic staging). ---- */
+    function bristle(g, x1, y1, x2, y2, wd, rgb, a, n){
+      var dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy) || 1, nx = -dy / L, ny = dx / L;
+      for(var q = 0; q < n; q++){
+        var o = (Math.random() - 0.5) * wd, j = (Math.random() - 0.5) * 3;
+        g.strokeStyle = 'rgba(' + rgb + ',' + (a * (0.35 + Math.random() * 0.65)).toFixed(3) + ')';
+        g.lineWidth = 0.6 + Math.random() * 1.8;
+        g.beginPath(); g.moveTo(x1 + nx * o + j, y1 + ny * o + j); g.lineTo(x2 + nx * o - j, y2 + ny * o - j); g.stroke();
+      }
     }
-    var mArt1 = M(0xFFFFFF, 0.72, 0.0, { map:artTex('art1','#EDE7DA','rgba(152,168,178,A)','rgba(206,186,160,A)'), env:0.25 });
-    var mArt2 = M(0xFFFFFF, 0.72, 0.0, { map:artTex('art2','#F2F0EA','rgba(120,132,120,A)','rgba(224,206,176,A)'), env:0.25 });
-    var mArt3 = M(0xFFFFFF, 0.72, 0.0, { map:artTex('art3','#E6E9EA','rgba(60,104,124,A)','rgba(188,206,214,A)'), env:0.25 });
+    function weave(g, w, h){
+      g.fillStyle = 'rgba(0,0,0,0.035)';
+      for(var y = 0; y < h; y += 2) g.fillRect(0, y, w, 0.7);
+      g.fillStyle = 'rgba(255,255,255,0.04)';
+      for(var x = 0; x < w; x += 2) g.fillRect(x, 0, 0.7, h);
+    }
+    function blob(g, cx, cy, r, col){
+      g.fillStyle = col; g.beginPath();
+      var n = 9, pts = [];
+      for(var q = 0; q < n; q++){ var a = q / n * 6.283, rr = r * (0.62 + Math.random() * 0.5); pts.push([cx + Math.cos(a) * rr, cy + Math.sin(a) * rr * 1.15]); }
+      g.moveTo((pts[0][0] + pts[n-1][0]) / 2, (pts[0][1] + pts[n-1][1]) / 2);
+      for(var q2 = 0; q2 < n; q2++){ var p1 = pts[q2], p2 = pts[(q2 + 1) % n]; g.quadraticCurveTo(p1[0], p1[1], (p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2); }
+      g.fill();
+    }
+    function artCanvas(key, draw){ return mkTex(key, 320, 400, function(g, w, h){ draw(g, w, h); weave(g, w, h); }, 1, 1); }
+    var texArtA = artCanvas('artA', function(g, w, h){          /* colour field: sage, clay and cream */
+      base(g, w, h, '#EDE8DC');
+      [[36, 52, 248, 138, '#9BA88C'], [36, 196, 248, 86, '#D8B9A2'], [36, 292, 248, 62, '#B9B9A4']].forEach(function(b){
+        g.fillStyle = b[4]; g.fillRect(b[0], b[1], b[2], b[3]);
+        for(var e = 0; e < 5; e++){ var yy = b[1] + Math.random() * b[3]; bristle(g, b[0] - 3, yy, b[0] + b[2] + 3, yy, 10, '80,86,70', 0.16, 4); }
+        bristle(g, b[0], b[1] + b[3] / 2, b[0] + b[2], b[1] + b[3] / 2, b[3], '255,255,250', 0.10, 26);
+      });
+    });
+    var texArtB = artCanvas('artB', function(g, w, h){          /* horizon: pale sky, deep water, a strip of sand */
+      var sky = g.createLinearGradient(0, 0, 0, h * 0.52); sky.addColorStop(0, '#E9ECE6'); sky.addColorStop(1, '#C7D3D3');
+      g.fillStyle = sky; g.fillRect(0, 0, w, h * 0.52);
+      var sea = g.createLinearGradient(0, h * 0.52, 0, h * 0.86); sea.addColorStop(0, '#6C8C97'); sea.addColorStop(1, '#2E495A');
+      g.fillStyle = sea; g.fillRect(0, h * 0.52, w, h * 0.34);
+      g.fillStyle = '#DACCAC'; g.fillRect(0, h * 0.86, w, h * 0.14);
+      for(var r = 0; r < 26; r++) bristle(g, 0, h * (0.53 + Math.random() * 0.32), w, h * (0.53 + Math.random() * 0.32), 6, '235,242,242', 0.16, 3);
+      for(var r2 = 0; r2 < 10; r2++) bristle(g, 0, h * (0.87 + Math.random() * 0.12), w, h * (0.87 + Math.random() * 0.12), 8, '150,130,100', 0.14, 3);
+    });
+    var texArtC = artCanvas('artC', function(g, w, h){          /* arcs: clay, blush and navy circles */
+      base(g, w, h, '#F1EBDD');
+      [[120, 165, 112, 'rgba(206,140,112,0.90)'], [212, 250, 92, 'rgba(232,196,176,0.88)'], [140, 322, 66, 'rgba(56,70,90,0.92)']].forEach(function(c){
+        g.fillStyle = c[3]; g.beginPath(); g.arc(c[0], c[1], c[2], 0, 6.283); g.fill();
+        bristle(g, c[0] - c[2], c[1], c[0] + c[2], c[1] + 12, c[2] * 1.6, '255,255,255', 0.10, 22);
+      });
+      g.strokeStyle = 'rgba(30,30,32,0.75)'; g.lineWidth = 2.2; g.beginPath(); g.arc(120, 165, 132, 3.6, 5.6); g.stroke();
+    });
+    var texArtD = artCanvas('artD', function(g, w, h){          /* sweeps: broad charcoal, blush and grey strokes */
+      base(g, w, h, '#EEE9DF');
+      [[30, 330, 290, 80, 62, '52,54,58', 0.88], [30, 260, 300, 150, 50, '226,190,172', 0.85], [60, 90, 280, 250, 40, '150,158,150', 0.75], [20, 370, 250, 210, 34, '52,54,58', 0.55]].forEach(function(s2){
+        g.strokeStyle = 'rgba(' + s2[5] + ',' + s2[6] + ')'; g.lineWidth = s2[4]; g.lineCap = 'round';
+        g.beginPath(); g.moveTo(s2[0], s2[1]); g.quadraticCurveTo((s2[0] + s2[2]) / 2 + 30, (s2[1] + s2[3]) / 2 - 40, s2[2], s2[3]); g.stroke();
+        bristle(g, s2[0], s2[1], s2[2], s2[3], s2[4], '255,255,250', 0.16, 30);
+        bristle(g, s2[0], s2[1], s2[2], s2[3], s2[4] * 0.9, '20,20,22', 0.10, 14);
+      });
+    });
+    var texArtE = artCanvas('artE', function(g, w, h){          /* organic shapes: sage, deep green, ochre */
+      base(g, w, h, '#E9E4D6');
+      blob(g, 110, 130, 90, '#8FA083'); blob(g, 215, 250, 100, '#4F6B5A'); blob(g, 100, 320, 66, '#D2A65E'); blob(g, 235, 96, 56, '#F4EFE2'); blob(g, 170, 190, 44, '#E7C9B4');
+      for(var q = 0; q < 14; q++) bristle(g, Math.random() * w, Math.random() * h, Math.random() * w, Math.random() * h, 18, '255,255,250', 0.05, 8);
+    });
+    var mArt1 = M(0xFFFFFF, 0.68, 0.0, { map:texArtC, bump:0.030, env:0.22 });
+    var mArt2 = M(0xFFFFFF, 0.68, 0.0, { map:texArtA, bump:0.030, env:0.22 });
+    var mArt3 = M(0xFFFFFF, 0.68, 0.0, { map:texArtB, bump:0.030, env:0.22 });
+    var mArt4 = M(0xFFFFFF, 0.68, 0.0, { map:texArtD, bump:0.030, env:0.22 });
+    var mArt5 = M(0xFFFFFF, 0.68, 0.0, { map:texArtE, bump:0.030, env:0.22 });
+    var mCanvasEdge = M(0xEDE8DC, 0.9, 0.0, { env:0.2 });
 
-    /* a framed canvas on a wall */
+    /* a floating canvas: the painted canvas stands 3.5 cm proud of a slim dark backing, so a soft shadow line
+       runs round it (the way a gallery hangs a canvas), rather than a chunky frame */
     function art(x, y, z, rotY, w, h, mat){
       var g = new T.Group();
-      g.add(new T.Mesh(new T.BoxGeometry(w + 0.09, h + 0.09, 0.045), mWalnut));
-      g.add(new T.Mesh(new T.BoxGeometry(w, h, 0.075), mat));
+      var back = new T.Mesh(new T.BoxGeometry(w + 0.05, h + 0.05, 0.04), mBlack); back.position.z = -0.0175; g.add(back);
+      var cv = new T.Mesh(new T.BoxGeometry(w, h, 0.045), [mCanvasEdge, mCanvasEdge, mCanvasEdge, mCanvasEdge, mat, mCanvasEdge]); cv.position.z = 0.015; g.add(cv);
       g.traverse(function(o){ if(o.isMesh){ o.castShadow = true; o.receiveShadow = true; } });
       g.position.set(x, y, z); g.rotation.y = rotY || 0;
       world.add(g);
     }
 
     /* a planted pot — the single cheapest thing that makes a room look lived in */
+    var mPotG = M(0xE4DFD4, 0.62, 0.0, { env:0.4 });
     function pot(x, z, h, potMat){
-      cyl(0.19, 0.15, 0.42, x, FL + 0.21, z, potMat || M(0xE4DFD4, 0.62, 0, { env:0.4 }), 14);
-      for(var i=0;i<12;i++){
-        var lf = new T.Mesh(new T.SphereGeometry(0.17 + Math.random()*0.08, 7, 5),
-                            i%2 ? mFoliage : mFoliage2);
-        lf.scale.set(1, 0.34, 0.62);
-        var a = Math.random()*6.283, r = Math.random()*0.30;
-        lf.position.set(x + Math.cos(a)*r, FL + 0.48 + Math.random()*h, z + Math.sin(a)*r);
-        lf.rotation.set(Math.random()*0.8, Math.random()*6.28, Math.random()*0.8);
-        lf.castShadow = true;
-        world.add(lf);
-      }
+      var pt = latheMesh([[0,0],[0.13,0],[0.16,0.02],[0.20,0.30],[0.215,0.41],[0.20,0.425],[0.185,0.41],[0.17,0.39],[0,0.39]], 1, 1, potMat || mPotG, 20);
+      pt.position.set(x, FL, z); world.add(pt);
+      contact(x, z, 0.75, 0.75);
+      cyl(0.172, 0.172, 0.012, x, FL + 0.388, z, mSoil, 16);
+      var kind = Math.abs(Math.round(x * 7 + z * 13)) % 3;          /* three plant kinds, chosen by where the pot stands */
+      var o = kind === 0 ? { n: 54, h: h + 0.15, scale: 1.30, stems: 5, lean: 0.24 }
+            : kind === 1 ? { n: 48, h: h + 0.10, scale: 1.25, stems: 4, lean: 0.12, broad: true, upright: true, hue: 0.32, light: 0.19 }
+            :              { n: 60, h: h * 0.75 + 0.15, scale: 1.45, stems: 6, lean: 0.40, hue: 0.26, light: 0.30 };
+      leafyPlant(x, FL + 0.40, z, o);
     }
 
     function softRug(x, z, w, d, mat){
@@ -7246,6 +7832,136 @@ main:focus{outline:none}
       world.add(m);
     }
 
+    /* ---------- the foyer, and the open floor between it and the great room ----------
+       Both were bare floor. Everything here is styling built from the house's own
+       materials and palette (ash, walnut, marble, brass, chrome, cream linen, blush,
+       navy, amber glass) and is concept dressing, not a fact about the property
+       (NEEDS CRISTINA: generic staging). It keeps clear of the walking paths. */
+    (function foyerAndBetween(){
+      var mCeramic = M(0xF1EEE6, 0.34, 0.0, { env:0.6 });
+      var mShadeLit = M(0xF5EBD5, 0.92, 0.0, { env:0.2, emissive:0xE9C58C, ei:0.30 });
+      var mBookA = M(0xD9D2C3, 0.9, 0, { env:0.2 }), mBookB = M(0x3E4145, 0.85, 0, { env:0.2 }), mBookC = M(0xB9A58A, 0.9, 0, { env:0.2 });
+
+      /* the router walks around anything registered here, and the walk test fails if it does not */
+      function hold(x, z, w, d, h){ blocker(x - w / 2, z - d / 2, x + w / 2, z + d / 2, 0, h); }
+      function shadowed(g){ g.traverse(function(o){ if(o.isMesh){ o.castShadow = true; o.receiveShadow = true; } }); }
+      /* a ceramic table lamp with a lit linen shade; y = the surface it stands on */
+      function tableLamp(x, y, z){
+        var g = new T.Group();
+        var b = new T.Mesh(new T.SphereGeometry(0.11, 14, 10), mCeramic); b.scale.set(1, 1.2, 1); b.position.y = 0.13; g.add(b);
+        var n = new T.Mesh(new T.CylinderGeometry(0.03, 0.045, 0.16, 10), mCeramic); n.position.y = 0.30; g.add(n);
+        var s = new T.Mesh(new T.CylinderGeometry(0.11, 0.16, 0.24, 18, 1, true), mShadeLit); s.material.side = T.DoubleSide; s.position.y = 0.46; g.add(s);
+        var cap = new T.Mesh(new T.CylinderGeometry(0.11, 0.11, 0.008, 18), mBrass); cap.position.y = 0.58; g.add(cap);
+        shadowed(g); g.position.set(x, y, z); world.add(g);
+        glow(x, y + 0.46, z, 0.42, 0xFFDCA0, 0.32);
+      }
+      /* a ceramic vase with tall branches */
+      function vase(x, y, z, r, h, o){
+        var g = new T.Group();
+        var v = new T.Mesh(new T.LatheGeometry([[0,0],[r*0.62,0],[r*0.95,h*0.14],[r,h*0.36],[r*0.90,h*0.62],[r*0.62,h*0.84],[r*0.56,h*0.95],[r*0.68,h],[r*0.60,h],[r*0.50,h*0.96]].map(function(q){ return new T.Vector2(q[0], q[1]); }), 22), mCeramic); g.add(v);
+        var lip = new T.Mesh(new T.TorusGeometry(r * 0.72, 0.008, 6, 20), mCeramic); lip.rotation.x = Math.PI / 2; lip.position.y = h; g.add(lip);
+        shadowed(g); g.position.set(x, y, z); world.add(g);
+        leafyPlant(x, y + h - 0.02, z, o);
+      }
+      /* an upholstered armchair in the house's own chair language: soft box seat, low back, brass legs.
+         It faces +z before rotation; rot = PI/2 turns it to face +x, -PI/2 to face -x. */
+      function armchair(x, z, rot, fab){
+        var g = new T.Group();
+        var seat = new T.Mesh(puffGeo(0.78, 0.22, 0.72, 0.09, 0.035), fab); seat.position.y = 0.38; g.add(seat);
+        var back = new T.Mesh(puffGeo(0.78, 0.50, 0.16, 0.08, 0.04), fab); back.position.set(0, 0.68, -0.31); back.rotation.x = -0.12; g.add(back);
+        [-1, 1].forEach(function(s){
+          var arm = new T.Mesh(roundGeo(0.13, 0.24, 0.62, 0.06, 4), fab); arm.position.set(s * 0.325, 0.55, -0.03); g.add(arm);
+          [-1, 1].forEach(function(t){
+            var lg = new T.Mesh(new T.CylinderGeometry(0.02, 0.015, 0.24, 8), mBrass); lg.position.set(s * 0.30, 0.12, t * 0.27); g.add(lg);
+          });
+        });
+        var pil = new T.Mesh(puffGeo(0.36, 0.30, 0.10, 0.05, 0.04), mLinenLt); pil.position.set(0.14, 0.62, -0.19); pil.rotation.x = -0.25; g.add(pil);
+        shadowed(g); g.position.set(x, FL, z); g.rotation.y = rot; world.add(g);
+        contact(x, z, 1.1, 1.1);
+      }
+
+      /* ===== the foyer ===== */
+      /* the console table: two lamps, a brass bowl, books, and a large canvas above */
+      tableLamp(2.0, FL + 0.88, -12.70);
+      tableLamp(3.2, FL + 0.88, -12.70);
+      cyl(0.14, 0.08, 0.07, 2.6, FL + 0.915, -12.68, mBrass, 18);
+      bx(0.30, 0.032, 0.22, 2.95, FL + 0.896, -12.62, mBookA, false);
+      bx(0.27, 0.030, 0.20, 2.94, FL + 0.927, -12.63, mBookB, false);
+      art(2.6, FL + 1.80, -12.917, 0, 1.50, 1.00, mArt3);
+      hold(2.6, -12.7, 1.7, 0.5, 0.9);
+      /* a bench along the courtyard glass, with two cushions */
+      rbx(0.50, 0.11, 1.70, -3.45, FL + 0.47, -10.45, mLinenLt, 0.05);
+      bx(0.50, 0.05, 1.74, -3.45, FL + 0.395, -10.45, mAsh);
+      [[-0.75, -0.19], [-0.75, 0.19], [0.75, -0.19], [0.75, 0.19]].forEach(function(o){
+        bx(0.05, 0.37, 0.05, -3.45 + o[1], FL + 0.185, -10.45 + o[0], mAsh);
+      });
+      rbx(0.12, 0.32, 0.44, -3.62, FL + 0.66, -11.05, mBlush, 0.05);
+      rbx(0.12, 0.30, 0.40, -3.62, FL + 0.65, -9.85, mNavy, 0.05);
+      contact(-3.45, -10.45, 0.9, 2.1);
+      hold(-3.45, -10.45, 0.6, 1.8, 0.7);
+      pot(-3.35, -12.25, 1.15);
+      hold(-3.35, -12.25, 0.4, 0.4, 1.2);
+      /* a rug under the foyer and a tall vase with branches in the north-east corner */
+      softRug(0.9, -10.4, 3.8, 2.5, mRug);
+      vase(4.45, FL, -12.30, 0.15, 0.80, { n: 26, h: 1.05, scale: 1.25, stems: 5, lean: 0.35, upright: true, light: 0.30 });
+      contact(4.45, -12.30, 0.7, 0.7);
+      hold(4.45, -12.30, 0.32, 0.32, 1.5);
+      /* a small cluster of amber glass discs overhead, the same idea as the primary bedroom's */
+      var chand = new T.Group();
+      for(var d = 0; d < 13; d++){
+        var disc = new T.Mesh(new T.SphereGeometry(0.15, 9, 7), mAmber);
+        disc.scale.set(1, 0.55, 1);
+        var a = (d / 13) * 6.283, rr = 0.20 + (d % 3) * 0.09;
+        disc.position.set(Math.cos(a) * rr, -(d % 4) * 0.10, Math.sin(a) * rr);
+        chand.add(disc);
+      }
+      chand.position.set(0.9, FL + 2.55, -10.4);
+      world.add(chand);
+      cyl(0.006, 0.006, 0.75, 0.9, FL + 3.0, -10.4, mChrome, 6);
+      glow(0.9, FL + 2.45, -10.4, 0.60, 0xFFD9A0, 0.36);
+
+      /* ===== the open floor between the foyer and the living seating ===== */
+      /* a conversation corner: two blush and navy armchairs facing each other over a small marble table */
+      softRug(-2.8, -6.0, 3.6, 2.6, mRugBed);
+      armchair(-3.9, -6.0, Math.PI / 2, mBlush);
+      armchair(-1.7, -6.0, -Math.PI / 2, mNavy);
+      cyl(0.30, 0.30, 0.03, -2.8, FL + 0.50, -6.0, mMarble, 24);
+      cyl(0.03, 0.03, 0.46, -2.8, FL + 0.25, -6.0, mBrass, 10);
+      cyl(0.16, 0.16, 0.02, -2.8, FL + 0.01, -6.0, mBrass, 18);
+      contact(-2.8, -6.0, 1.0, 1.0);
+      hold(-3.9, -6.0, 0.8, 0.8, 0.9); hold(-1.7, -6.0, 0.8, 0.8, 0.9); hold(-2.8, -6.0, 0.62, 0.62, 0.5);
+      cyl(0.045, 0.06, 0.18, -2.8, FL + 0.60, -6.0, mCeramic, 12);
+      leafyPlant(-2.8, FL + 0.68, -6.0, { n: 12, h: 0.36, scale: 0.8, stems: 3, lean: 0.25, upright: true, light: 0.32 });
+      /* a floor lamp and a tall plant behind the chairs */
+      cyl(0.16, 0.16, 0.02, -4.7, FL + 0.01, -5.2, mChrome, 18);
+      cyl(0.012, 0.012, 1.45, -4.7, FL + 0.74, -5.2, mChrome, 8);
+      var fl = new T.Mesh(new T.CylinderGeometry(0.20, 0.20, 0.30, 22, 1, true), mShadeLit); fl.material.side = T.DoubleSide;
+      fl.position.set(-4.7, FL + 1.62, -5.2); fl.castShadow = true; world.add(fl);
+      glow(-4.7, FL + 1.62, -5.2, 0.55, 0xFFDCA0, 0.30);
+      hold(-4.7, -5.2, 0.3, 0.3, 1.6);
+      pot(-0.5, -5.2, 1.25);
+      hold(-0.5, -5.2, 0.4, 0.4, 1.3);
+
+      /* a walnut sideboard on the east wall with a marble top, a lamp and objects, under the large canvas already on that wall */
+      bx(0.46, 0.52, 2.40, 7.61, FL + 0.56, -4.60, mWalnut);
+      bx(0.50, 0.04, 2.50, 7.61, FL + 0.84, -4.60, mMarble);
+      [[-1.10, -0.18], [-1.10, 0.18], [1.10, -0.18], [1.10, 0.18]].forEach(function(o){
+        bx(0.03, 0.30, 0.03, 7.61 + o[1], FL + 0.15, -4.60 + o[0], mBrass);
+      });
+      [-0.80, 0, 0.80].forEach(function(o){
+        bx(0.012, 0.42, 0.74, 7.375, FL + 0.56, -4.60 + o, mAsh, false);
+        cyl(0.008, 0.008, 0.14, 7.36, FL + 0.66, -4.60 + o + 0.28, mBrass, 8).rotation.x = Math.PI / 2;
+      });
+      contact(7.6, -4.6, 1.0, 2.9);
+      tableLamp(7.61, FL + 0.86, -5.55);
+      vase(7.61, FL + 0.86, -3.75, 0.085, 0.36, { n: 14, h: 0.60, scale: 0.95, stems: 4, lean: 0.30, upright: true, light: 0.32 });
+      cyl(0.11, 0.06, 0.06, 7.55, FL + 0.89, -4.60, mBrass, 16);
+      bx(0.27, 0.030, 0.20, 7.58, FL + 0.875, -4.95, mBookC, false);
+      hold(7.61, -4.6, 0.5, 2.5, 0.9);
+      pot(7.30, -6.40, 1.30);
+      hold(7.30, -6.40, 0.4, 0.4, 1.4);
+    })();
+
     /* a guest bathroom fitted into the rectangle given, with the vanity
        on the east wall and the shower in the north-west corner */
     var mShowerTile = M(0xFFFFFF, 0.18, 0.0, { map:texMosaic, bump:0.03, env:0.8 });
@@ -7254,11 +7970,12 @@ main:focus{outline:none}
       bx(0.03, CH - 0.1, z2 - z1, x2 - 0.03, FL + (CH-0.1)/2, (z1+z2)/2, mBathWall, false);
       bx(x2 - x1, CH - 0.1, 0.03, (x1+x2)/2, FL + (CH-0.1)/2, z1 + 0.03, mBathWall, false);
       var vz = (z1 + z2)/2 + 0.35;
-      bx(0.50, 0.48, 1.25, x2 - 0.29, FL + 0.58, vz, mAsh);
+      bx(0.50, 0.48, 1.25, x2 - 0.29, FL + 0.58, vz, mCab);
+      vanityReveals(x2 - 0.542, vz, 1.25, FL + 0.58, 0.48);
       bx(0.56, 0.05, 1.32, x2 - 0.29, FL + 0.85, vz, mQuartz);
-      bx(0.34, 0.03, 0.50, x2 - 0.31, FL + 0.892, vz, M(0xFCFBF8, 0.22, 0, { env:0.85 }), false);
+      makeBasin(x2 - 0.31, FL + 0.875, vz, 0.17, 0.25);
       cyl(0.013, 0.013, 0.19, x2 - 0.50, FL + 0.97, vz, mChrome, 10);
-      bx(0.03, 1.10, 1.30, x2 - 0.055, FL + 1.64, vz, M(0xDDE4E6, 0.03, 0.9, { env:1.5 }), false);
+      mirrorBx(0.03, 1.10, 1.30, x2 - 0.055, FL + 1.64, vz, -1);
       bx(0.04, CH - 0.1, 1.44, x2 - 0.045, FL + (CH-0.1)/2, vz, mHerring, false);
       /* the shower, lined in the same pale blue glass mosaic */
       var sx2 = x1 + 1.35, sz2 = z1 + 1.30;
@@ -7266,13 +7983,99 @@ main:focus{outline:none}
       bx(0.03, CH - 0.2, sz2 - z1, x1 + 0.04, FL + (CH-0.2)/2, (z1+sz2)/2, mShowerTile, false);
       bx(sx2 - x1, CH - 0.2, 0.03, (x1+sx2)/2, FL + (CH-0.2)/2, z1 + 0.04, mShowerTile, false);
       bx(0.04, CH - 0.35, sz2 - z1, sx2, FL + (CH-0.35)/2, (z1+sz2)/2, mGlass, false);
-      cyl(0.075, 0.075, 0.03, x1 + 0.65, FL + 2.20, z1 + 0.60, mChrome, 12);
-      bx(0.05, 0.18, 0.05, x1 + 0.65, FL + 2.31, z1 + 0.60, mChrome, false);
+      rainShower(x1 + 0.70, z1 + 0.68, z1 + 0.055);
       /* towels and a folded stack */
       cyl(0.011, 0.011, 0.46, x2 - 0.06, FL + 1.58, vz - 1.00, mChrome, 8).rotation.x = Math.PI/2;
       rbx(0.05, 0.42, 0.21, x2 - 0.12, FL + 1.37, vz - 1.00, M(0xDCD8D0, 0.95, 0, { env:0.2 }), 0.03);
       rbx(0.30, 0.09, 0.22, x2 - 0.34, FL + 1.22, vz - 0.55, M(0xF2EFE8, 0.95, 0, { env:0.2 }), 0.03);
       contact((x1+x2)/2, vz, (x2-x1)*0.8, 1.6);
+    }
+
+    /* Bedroom 2's en-suite is a 6m x 7m room (x -19.9..-14.15, z -12.9..-6.15),
+       far bigger than the two small guest baths, so it gets a composed
+       layout, symmetrical about the door on its east wall (z -9.4): a double
+       vanity faces you as you come in, a freestanding tub is the focus of the
+       far wall between a shower and a toilet, and a bench with art sits
+       between two plants on the wall to your left. */
+    function bigGuestBath(){
+      var XW = -19.9, XE = -14.15, ZN = -12.9, ZS = -6.15, DZ = -9.4;
+      var mBasin = M(0xFCFBF8, 0.22, 0, { env:0.85 });
+      var mTowel = M(0xF2EFE8, 0.95, 0, { env:0.2 });
+      var mDownB = M(0xF2F0EA, 0.5, 0.0, { env:0.4, emissive:0xFFF3DC, ei:0.30 });
+      slab(XW, ZN, XE, ZS, 0.04, FL + 0.006, mBathFlr, false);
+      /* tiled lining on all four walls, the east one cut around the doorway */
+      bx(0.03, CH - 0.1, ZS - ZN, -19.935, FL + (CH-0.1)/2, (ZN+ZS)/2, mBathWall, false);
+      bx(XE - XW, CH - 0.1, 0.03, (XW+XE)/2, FL + (CH-0.1)/2, ZN + 0.03, mBathWall, false);
+      bx(XE - XW, CH - 0.1, 0.03, (XW+XE)/2, FL + (CH-0.1)/2, ZS - 0.025, mBathWall, false);
+      bx(0.03, CH - 0.1, -10.05 - ZN, XE - 0.03, FL + (CH-0.1)/2, (ZN - 10.05)/2, mBathWall, false);
+      bx(0.03, CH - 0.1, ZS + 8.75, XE - 0.03, FL + (CH-0.1)/2, (-8.75 + ZS)/2, mBathWall, false);
+
+      /* the double vanity on the west wall, opposite the door */
+      bx(0.58, 0.54, 3.4, -19.62, FL + 0.60, DZ, mCab);
+      vanityReveals(-19.332, DZ, 3.4, FL + 0.60, 0.54);
+      bx(0.64, 0.05, 3.5, -19.60, FL + 0.89, DZ, mQuartz);
+      bx(0.05, 0.62, 3.6, -19.89, FL + 0.94, DZ, mHerring, false);
+      [-0.9, 0.9].forEach(function(o){
+        var zb = DZ + o;
+        makeBasin(-19.56, FL + 0.915, zb, 0.20, 0.31);
+        cyl(0.013, 0.013, 0.20, -19.80, FL + 1.02, zb, mChrome, 10);
+        bx(0.05, 0.03, 0.14, -19.72, FL + 1.10, zb, mChrome, false);
+        mirrorBx(0.03, 1.35, 1.50, -19.905, FL + 1.78, zb, 1);
+      });
+      [-2.0, 0, 2.0].forEach(function(o){
+        bx(0.07, 0.62, 0.10, -19.84, FL + 1.95, DZ + o, mAmber, false);
+        glow(-19.79, FL + 1.95, DZ + o, 0.40, 0xFFE0AC, 0.45);
+      });
+      rbx(0.32, 0.09, 0.24, -19.45, FL + 0.945, DZ, mTowel, 0.03);
+      soapBottle(-19.50, FL + 0.915, DZ - 0.42);
+      soapBottle(-19.50, FL + 0.915, DZ + 0.42);
+      [-1.55, 1.55].forEach(function(o){
+        cyl(0.075, 0.062, 0.26, -19.45, FL + 1.045, DZ + o, mGlass, 12);
+        leafyPlant(-19.45, FL + 1.10, DZ + o, { n: 20, h: 0.42, scale: 0.9, stems: 3, lean: 0.20, round: true, hue: 0.30, sat: 0.16, light: 0.38, upright: true });
+      });
+      cyl(0.011, 0.011, 0.55, -19.86, FL + 1.55, ZS - 0.60, mChrome, 8).rotation.x = Math.PI/2;
+      rbx(0.05, 0.50, 0.24, -19.80, FL + 1.32, ZS - 0.60, mTowel, 0.03);
+
+      /* the walk-in shower in the north-west corner, with a fixed glass screen */
+      var sx2 = XW + 1.50, sz2 = ZN + 1.50;
+      slab(XW, ZN, sx2, sz2, 0.03, FL + 0.03, mShowerTile, false);
+      bx(0.03, CH - 0.2, sz2 - ZN, XW + 0.04, FL + (CH-0.2)/2, (ZN+sz2)/2, mShowerTile, false);
+      bx(sx2 - XW, CH - 0.2, 0.03, (XW+sx2)/2, FL + (CH-0.2)/2, ZN + 0.04, mShowerTile, false);
+      bx(0.04, CH - 0.35, 0.85, sx2, FL + (CH-0.35)/2, ZN + 0.45, mGlass, false);
+      rainShower(XW + 0.78, ZN + 0.78, ZN + 0.055);
+
+      /* the freestanding tub, centred on the north wall between shower and toilet */
+      bx(2.4, CH - 0.1, 0.05, -16.60, FL + (CH-0.1)/2, ZN + 0.055, mHerring, false);
+      makeTub(-16.60, ZN + 0.70, 1.65, 0.78, 0.56);
+      cyl(0.012, 0.012, 0.85, -16.60, FL + 0.43, ZN + 0.22, mChrome, 8);
+      bx(0.05, 0.05, 0.40, -16.60, FL + 0.86, ZN + 0.40, mChrome, false);
+      contact(-16.60, ZN + 0.70, 2.3, 1.4);
+      [-1.15, 1.15].forEach(function(o){
+        bx(0.10, 0.62, 0.07, -16.60 + o, FL + 1.75, ZN + 0.10, mAmber, false);
+        glow(-16.60 + o, FL + 1.75, ZN + 0.15, 0.40, 0xFFE0AC, 0.45);
+      });
+
+      /* the toilet in the north-east corner */
+      makeToilet(XE - 0.03 - 0.34, ZN + 0.75, -Math.PI / 2);
+      contact(XE - 0.36, ZN + 0.75, 1.1, 1.0);
+
+      /* a bench under a large canvas on the south wall, a plant in each corner */
+      softRug(-17.0, DZ, 2.6, 3.2, mRugBed);
+      var bench = new T.Mesh(puffGeo(1.50, 0.14, 0.48, 0.06, 0.02), mLinenLt);
+      bench.position.set(-17.0, FL + 0.45, ZS - 0.42); bench.castShadow = true; bench.receiveShadow = true; world.add(bench);
+      [-0.62, 0.62].forEach(function(o){ bx(0.06, 0.38, 0.40, -17.0 + o, FL + 0.19, ZS - 0.42, mBronze); });
+      rbx(0.46, 0.09, 0.30, -17.15, FL + 0.55, ZS - 0.42, mTowel, 0.03);
+      rbx(0.34, 0.07, 0.26, -16.70, FL + 0.54, ZS - 0.42, M(0xC9D3D0, 0.95, 0, { env:0.2 }), 0.03);
+      contact(-17.0, ZS - 0.42, 1.9, 0.9);
+      art(-17.0, FL + 1.70, ZS - 0.03, Math.PI, 1.30, 0.90, mArt3);
+      pot(XW + 0.55, ZS - 0.50, 0.55);
+      pot(XE - 0.55, ZS - 0.50, 0.55);
+
+      /* recessed downlights: six small lamps spread over the room */
+      [[-19.0, -10.3], [-19.0, -8.5], [-17.0, -12.0], [-17.0, -9.0], [-15.2, -9.4], [-17.0, -7.0]].forEach(function(p){
+        cyl(0.075, 0.075, 0.03, p[0], FL + CH - 0.215, p[1], mDownB, 10);
+        vlight(0xFFF3DC, 0.55, 5.5, p[0], FL + CH - 0.30, p[1]);
+      });
     }
 
     (function character(){
@@ -7281,17 +8084,17 @@ main:focus{outline:none}
       wx(14.6, 15.4, -11.4, CH, mWall);
       wx(16.4, 17.0, -11.4, CH, mWall);
       guestBath(14.72, -13.9, 16.9, -11.5);
-      walnutDoor(15.90, -11.40, 1.00, 0, -0.65);
+      walnutDoor(15.90, -11.40, 1.00, 0, 1, 0, -1, false);
 
       wz(-8.0, -5.4, 14.6, CH, mWall);
       wx(14.6, 15.4, -5.4, CH, mWall);
       wx(16.4, 17.0, -5.4, CH, mWall);
       guestBath(14.72, -7.9, 16.9, -5.5);
-      walnutDoor(15.90, -5.40, 1.00, 0, -0.65);
+      walnutDoor(15.90, -5.40, 1.00, 0, 1, 0, -1, false);
 
       /* ---- bedroom 2's en-suite, which was an empty box. It stops short
               of z = -10.2 so the tiling does not run across the doorway. ---- */
-      guestBath(-19.9, -12.9, -14.15, -10.2);
+      bigGuestBath();
 
       /* ---- the gallery: a long runner, art, and something to look at ---- */
       softRug(-8.0, 0.0, 1.9, 11.0, mRugBed);
@@ -7301,7 +8104,7 @@ main:focus{outline:none}
          z=2.2) so the door swept straight through the frame when opened;
          moved down the wall clear of the swing, with room to spare before
          the next piece at z=-1.4 */
-      art(-9.86, FL + 1.75,  0.9, Math.PI/2, 1.10, 1.45, mArt3);
+      art(-9.86, FL + 1.75,  0.9, Math.PI/2, 1.10, 1.45, mArt5);
       /* runs along the gallery wall (its legs already did) — the top was
          turned across it and poked through into the great room */
       bx(0.36, 0.05, 1.30, -6.30, FL + 0.84, -6.4, mMarble);
@@ -7314,7 +8117,7 @@ main:focus{outline:none}
       /* ---- the great room, dressed ---- */
       pot(7.2, 5.3, 0.70);
       pot(-5.1, -6.6, 0.62);
-      art(7.90, FL + 1.80, -4.6, -Math.PI/2, 1.30, 1.70, mArt1);
+      art(7.90, FL + 1.80, -4.6, -Math.PI/2, 1.30, 1.70, mArt4);
       /* books and objects on the media wall shelves */
       [[1.10, 4.00],[1.52, 4.30],[1.94, 4.02],[2.36, 4.28]].forEach(function(b, i){
         rbx(0.17, 0.26, 0.30, -5.74, FL + b[0] + 0.14, b[1],
@@ -7329,6 +8132,8 @@ main:focus{outline:none}
       bx(0.95, 0.05, 0.40, -15.0, FL + 0.84, 0.32, mMarble);
       bx(0.05, 0.84, 0.05, -15.42, FL + 0.42, 0.32, mBronze);
       bx(0.05, 0.84, 0.05, -14.58, FL + 0.42, 0.32, mBronze);
+      ceramicVase(PROF_B, -15.28, FL + 0.865, 0.32, 0.95);
+      bookStack(-14.78, FL + 0.865, 0.32, 0.2, 3);
       /* a reading chair in the corner */
       var chair = new T.Mesh(roundGeo(0.82, 0.68, 0.80, 0.16, 4), mLinen);
       chair.position.set(-18.6, FL + 0.44, 4.6);
@@ -7337,20 +8142,42 @@ main:focus{outline:none}
       contact(-18.6, 4.6, 1.4, 1.4);
 
       /* ---- guest rooms ---- */
-      [[13.0, -11.0], [13.0, -5.0], [-12.0, -9.4]].forEach(function(b, i){
+      [[13.0, -12.83, -11.0], [13.0, -6.76, -5.0], [-12.0, -11.83, -9.4]].forEach(function(b, i){
         softRug(b[0], b[1] + 1.1, 2.9, 2.2, mRugBed);
-        pot(b[0] - 1.65, b[1] + 1.9, 0.48);
+        pot(b[0] - 1.65, b[2] + 1.9, 0.48);          /* the plant stays where it was, clear of the doorway */
       });
       /* both were flush with their bedroom's entry door (also at z=-10.6 and
          z=-4.6) so the door swept into the frame on opening; moved further
          from each doorway, clear of the swing */
       art(11.24, FL + 1.80, -11.9, Math.PI/2, 1.00, 1.30, mArt3);
-      art(11.24, FL + 1.80,  -5.6, Math.PI/2, 1.00, 1.30, mArt1);
-      art(-14.13, FL + 1.80, -9.4, -Math.PI/2, 1.00, 1.30, mArt2);
+      art(11.24, FL + 1.80,  -6.0, Math.PI/2, 1.00, 1.30, mArt1);
+      art(-14.13, FL + 1.80, -11.7, -Math.PI/2, 1.00, 1.30, mArt2);   /* was over the en-suite doorway */
 
       /* ---- foyer ---- */
-      art(4.88, FL + 1.85, -10.6, -Math.PI/2, 1.15, 1.50, mArt3);
+      art(4.88, FL + 1.85, -9.5, -Math.PI/2, 1.15, 1.50, mArt5);   /* was half over the powder-room doorway */
       pot(-3.5, -12.3, 0.66);
+
+      /* ---- the powder room, fitted out: it was an empty box with a shelf. Toilet, basin, lit mirror, art,
+              towel bar, downlights, a plant and a runner. Styling only (NEEDS CRISTINA). Everything that
+              stands on the floor is registered so the walking routes keep clear of it. ---- */
+      makeToilet(7.53, -9.50, -Math.PI / 2);
+      blocker(7.15, -9.90, 7.90, -9.10, 0, 0.8);
+      makeBasin(7.60, FL + 0.95, -11.5, 0.20, 0.30);                       /* a vessel bowl on the stone shelf */
+      art(7.855, FL + 1.72, -9.50, -Math.PI / 2, 0.70, 0.90, mArt2);        /* a canvas over the toilet */
+      [-12.42, -10.58].forEach(function(z){                                 /* a lit bar either side of the mirror */
+        bx(0.07, 0.56, 0.10, 7.83, FL + 1.75, z, mAmber, false);
+        glow(7.78, FL + 1.75, z, 0.36, 0xFFE0AC, 0.40);
+      });
+      cyl(0.011, 0.011, 0.50, 6.55, FL + 1.28, -12.84, mChrome, 8).rotation.z = Math.PI / 2;   /* a towel bar on the north wall */
+      rbx(0.36, 0.42, 0.05, 6.55, FL + 1.06, -12.84, M(0xDCD8D0, 0.95, 0.0, { env:0.2 }), 0.03);
+      [[6.4, -11.0], [6.4, -9.6]].forEach(function(dl){                     /* two recessed downlights */
+        cyl(0.075, 0.075, 0.03, dl[0], FL + CH - 0.215, dl[1], M(0xF2F0EA, 0.5, 0.0, { env:0.4, emissive:0xFFF3DC, ei:0.30 }), 10);
+        vlight(0xFFF3DC, 0.55, 5.0, dl[0], FL + CH - 0.30, dl[1]);
+      });
+      pot(7.42, -8.52, 0.55);                                               /* a plant in the south-east corner */
+      blocker(7.15, -8.85, 7.70, -8.30, 0, 1.0);
+      softRug(6.35, -10.4, 1.3, 2.1, mRugBed);
+      contact(7.53, -9.50, 1.1, 1.0);
 
       /* ---- kitchen ---- */
       rbx(0.30, 0.10, 0.24, 11.2, FL + 0.99, 2.0, M(0xE8E2D4, 0.85, 0, { env:0.3 }), 0.03);
@@ -7363,8 +8190,8 @@ main:focus{outline:none}
       /* ---- The gallery was a bare corridor. It is the spine of the whole
               bedroom wing, so it gets treated as a room: a focal picture on
               the end wall, a bench, and pendants down its length. ---- */
-      art(-8.0, FL + 1.78, -12.88, 0, 1.70, 2.00, mArt3);
-      var bench = new T.Mesh(roundGeo(1.65, 0.16, 0.44, 0.06, 4), mLinenLt);
+      art(-8.0, FL + 1.78, -12.88, 0, 1.70, 2.00, mArt4);
+      var bench = new T.Mesh(puffGeo(1.65, 0.16, 0.44, 0.06, 0.02), mLinenLt);
       bench.position.set(-8.0, FL + 0.46, -11.1);
       bench.castShadow = true; bench.receiveShadow = true;
       world.add(bench);
@@ -7380,21 +8207,22 @@ main:focus{outline:none}
         glow(-8.0, FL + 2.40, pz, 0.55, 0xFFD9A0, 0.50);
       });
       /* a sculptural vessel on the console */
-      cyl(0.13, 0.09, 0.34, -6.22, FL + 1.04, -6.4, M(0xB9A488, 0.5, 0.1, { env:0.7 }), 14);
+      ceramicVase(PROF_A, -6.22, FL + 0.865, -6.15, 1.05);
+      bookStack(-6.30, FL + 0.865, -6.75, 1.5, 3);
 
       /* ---- guest rooms: nightstands, lamps and a bench, so they read as
               suites rather than a bed dropped into an empty box ---- */
-      [[13.0, -11.0], [13.0, -5.0], [-12.0, -9.4]].forEach(function(b){
+      [[13.0, -12.83], [13.0, -6.76], [-12.0, -11.83]].forEach(function(b){
         [-1.16, 1.16].forEach(function(dx){
-          bx(0.46, 0.44, 0.40, b[0] + dx, FL + 0.22, b[1] - 0.80, mAsh);
-          cyl(0.085, 0.10, 0.045, b[0] + dx, FL + 0.47, b[1] - 0.80, mBronze, 12);
-          cyl(0.015, 0.015, 0.30, b[0] + dx, FL + 0.64, b[1] - 0.80, mBronze, 8);
+          bx(0.46, 0.44, 0.40, b[0] + dx, FL + 0.22, b[1] - 0.90, mAsh);
+          cyl(0.085, 0.10, 0.045, b[0] + dx, FL + 0.47, b[1] - 0.90, mBronze, 12);
+          cyl(0.015, 0.015, 0.30, b[0] + dx, FL + 0.64, b[1] - 0.90, mBronze, 8);
           var shade = new T.Mesh(new T.CylinderGeometry(0.135, 0.175, 0.24, 16), mAmber);
-          shade.position.set(b[0] + dx, FL + 0.90, b[1] - 0.80);
+          shade.position.set(b[0] + dx, FL + 0.90, b[1] - 0.90);
           world.add(shade);
-          glow(b[0] + dx, FL + 0.94, b[1] - 0.80, 0.42, 0xFFDCA6, 0.45);
+          glow(b[0] + dx, FL + 0.94, b[1] - 0.90, 0.42, 0xFFDCA6, 0.45);
         });
-        var bn = new T.Mesh(roundGeo(1.25, 0.14, 0.40, 0.05, 4), mLinenLt);
+        var bn = new T.Mesh(puffGeo(1.25, 0.14, 0.40, 0.05, 0.02), mLinenLt);
         bn.position.set(b[0], FL + 0.46, b[1] + 1.30);
         bn.castShadow = true; bn.receiveShadow = true;
         world.add(bn);
@@ -7423,7 +8251,7 @@ main:focus{outline:none}
 
       /* a task chair */
       var chair = new T.Group();
-      chair.add(new T.Mesh(roundGeo(0.50, 0.08, 0.48, 0.05, 3), mLeather));
+      chair.add(new T.Mesh(puffGeo(0.50, 0.08, 0.48, 0.05, 0.015), mLeather));
       chair.children[0].position.y = 0.46;
       var flexBack = new T.Mesh(roundGeo(0.46, 0.52, 0.09, 0.06, 3), mLeather);
       flexBack.position.set(0, 0.76, -0.20); flexBack.rotation.x = -0.12;
@@ -7463,9 +8291,20 @@ main:focus{outline:none}
       contact(8.5, -15.4, 1.4, 2.3);
 
       /* a reading chair by the window */
-      var rc = new T.Mesh(roundGeo(0.80, 0.66, 0.78, 0.15, 4), mTeal);
-      rc.position.set(10.6, FL + 0.42, -18.6);
-      rc.castShadow = true; rc.receiveShadow = true;
+      var rc = new T.Group();
+      function rcPart(geo, mat, x, y, z, rx){
+        var p = new T.Mesh(geo, mat); p.position.set(x, y, z); if(rx) p.rotation.x = rx;
+        p.castShadow = true; p.receiveShadow = true; rc.add(p);
+      }
+      rcPart(roundGeo(0.78, 0.20, 0.72, 0.07, 6), mTeal, 0, 0.27, 0);            /* seat frame */
+      rcPart(roundGeo(0.60, 0.14, 0.58, 0.06, 6), mTeal, 0, 0.44, 0.04);         /* cushion    */
+      rcPart(roundGeo(0.78, 0.50, 0.15, 0.06, 6), mTeal, 0, 0.62, -0.30, -0.22); /* back       */
+      [-0.33, 0.33].forEach(function(ax){ rcPart(roundGeo(0.13, 0.28, 0.70, 0.055, 5), mTeal, ax, 0.47, 0.01); });
+      [[-0.30, -0.26], [0.30, -0.26], [-0.30, 0.26], [0.30, 0.26]].forEach(function(l){
+        rcPart(new T.CylinderGeometry(0.017, 0.013, 0.17, 8), mWalnut, l[0], 0.085, l[1]);
+      });
+      rc.position.set(10.6, FL, -18.55);
+      rc.rotation.y = 0.18;
       world.add(rc);
       contact(10.6, -18.6, 1.4, 1.4);
 
@@ -7605,9 +8444,9 @@ main:focus{outline:none}
       [[10.25,1.9],[10.25,2.6],[10.25,3.3],[11.4,4.35],[12.6,4.35]].forEach(function(s){
         contact(s[0], s[1], 0.95, 0.95);           /* island stools     */
       });
-      [[13.0,-11.0],[13.0,-5.0],[-12.0,-9.4]].forEach(function(b){
-        contact(b[0] - 1.16, b[1] - 0.80, 1.1, 1.0);   /* nightstands   */
-        contact(b[0] + 1.16, b[1] - 0.80, 1.1, 1.0);
+      [[13.0,-12.83],[13.0,-6.76],[-12.0,-11.83]].forEach(function(b){
+        contact(b[0] - 1.16, b[1] - 0.90, 1.1, 1.0);   /* nightstands   */
+        contact(b[0] + 1.16, b[1] - 0.90, 1.1, 1.0);
         contact(b[0], b[1] + 1.30, 1.9, 1.0);          /* bed-end bench */
       });
       contact(-15.0, -0.3, 1.5, 1.0);               /* primary console  */
@@ -7643,9 +8482,9 @@ main:focus{outline:none}
       /* --- outdoor lounge, under the west half of the roof --- */
       function outSofa(x, z, w, rot){
         var g = new T.Group();
-        g.add(new T.Mesh(roundGeo(w, 0.34, 0.95, 0.08, 4), M(0xE4DFD4, 0.9, 0, { env:0.25 })));
+        g.add(new T.Mesh(puffGeo(w, 0.34, 0.95, 0.08, 0.03), M(0xE4DFD4, 0.9, 0, { env:0.25 })));
         g.children[0].position.y = 0.30;
-        var b = new T.Mesh(roundGeo(w, 0.46, 0.22, 0.09, 4), M(0xEFEBE2, 0.9, 0, { env:0.25 }));
+        var b = new T.Mesh(puffGeo(w, 0.46, 0.22, 0.09, 0.035), M(0xEFEBE2, 0.9, 0, { env:0.25 }));
         b.position.set(0, 0.62, -0.36); g.add(b);
         g.add(new T.Mesh(new T.BoxGeometry(w + 0.1, 0.18, 1.02), mAsh));   /* down to the deck */
         g.children[2].position.y = 0.09;
@@ -7664,9 +8503,9 @@ main:focus{outline:none}
       bx(0.14, 0.72, 0.14, 9.4, FL + 0.36, 8.6, mSteel);    /* legs reach the deck */
       bx(0.14, 0.72, 0.14, 11.8, FL + 0.36, 8.6, mSteel);
       for(var i=0;i<3;i++){
-        var c1 = new T.Mesh(roundGeo(0.44, 0.44, 0.44, 0.10, 4), M(0xEDE9E0, 0.85, 0, { env:0.3 }));
+        var c1 = new T.Mesh(puffGeo(0.44, 0.44, 0.44, 0.10, 0.03), M(0xEDE9E0, 0.85, 0, { env:0.3 }));
         c1.position.set(9.7 + i*0.9, FL + 0.44, 7.9); c1.castShadow = true; world.add(c1);
-        var c2 = new T.Mesh(roundGeo(0.44, 0.44, 0.44, 0.10, 4), M(0xEDE9E0, 0.85, 0, { env:0.3 }));
+        var c2 = new T.Mesh(puffGeo(0.44, 0.44, 0.44, 0.10, 0.03), M(0xEDE9E0, 0.85, 0, { env:0.3 }));
         c2.position.set(9.7 + i*0.9, FL + 0.44, 9.3); c2.castShadow = true; world.add(c2);
       }
       contact(10.6, 8.6, 4.4, 2.8);
@@ -7790,21 +8629,19 @@ main:focus{outline:none}
       wz(7.6, 8.6, 16.0, 0.43, mStucco, CH - 0.65, 0.3);
       slab(16.0, 6.0, 19.2, 9.7, 0.28, FL + CH - 0.2, mStucco);
       slab(16.05, 6.05, 18.95, 9.45, 0.04, FL + 0.005, mBathFlr, false);
-      walnutDoor(16.05, 8.1, 0.95, Math.PI/2, 0.65, CH - 0.61);   /* sized to this lower room, up to the header */
+      walnutDoor(16.05, 8.1, 0.95, Math.PI/2, 1, CH - 0.61, 1);   /* sized to this lower room, up to the header */
 
       /* a floating vanity, toilet and mirror — the same materials as
          every other bathroom in the house */
-      bx(0.46, 0.48, 1.0, 18.61, FL + 0.58, 8.6, mAsh);
+      bx(0.46, 0.48, 1.0, 18.61, FL + 0.58, 8.6, mCab);
+      vanityReveals(18.378, 8.6, 1.0, FL + 0.58, 0.48);
       bx(0.52, 0.05, 1.06, 18.61, FL + 0.85, 8.6, mQuartz);
-      bx(0.32, 0.03, 0.46, 18.61, FL + 0.892, 8.35, M(0xFCFBF8, 0.22, 0, { env:0.85 }), false);
+      makeBasin(18.61, FL + 0.875, 8.35, 0.16, 0.23);
       cyl(0.013, 0.013, 0.20, 18.46, FL + 0.96, 8.35, mChrome, 10);
-      bx(0.03, 1.0, 1.0, 18.83, FL + 1.50, 8.6, M(0xDDE4E6, 0.03, 0.9, { env:1.5 }), false);   /* was inside the wall */
+      mirrorBx(0.03, 1.0, 1.0, 18.83, FL + 1.50, 8.6, -1);   /* was inside the wall */
       cyl(0.011, 0.011, 0.44, 18.90, FL + 1.55, 9.05, mChrome, 8).rotation.x = Math.PI/2;
       rbx(0.05, 0.38, 0.19, 18.85, FL + 1.35, 9.05, M(0xDCD8D0, 0.95, 0, { env:0.2 }), 0.03);
-      var toilet = new T.Mesh(roundGeo(0.42, 0.72, 0.62, 0.16, 4), M(0xFCFBF8, 0.20, 0.0, { env:0.85 }));
-      toilet.position.set(16.55, FL + 0.36, 6.75);
-      toilet.castShadow = true; toilet.receiveShadow = true;
-      world.add(toilet);
+      makeToilet(16.53, 6.75, Math.PI / 2);
       cyl(0.075, 0.075, 0.03, 17.3, FL + CH - 0.215, 8.0, M(0xF2F0EA, 0.5, 0.0, { env:0.4, emissive:0xFFF3DC, ei:0.30 }), 10);
       contact(18.55, 8.6, 1.3, 1.4);
       contact(16.55, 6.75, 1.0, 1.1);
@@ -7819,6 +8656,7 @@ main:focus{outline:none}
        them into one mesh per shared material before the shadow bake and
        first render. */
     flushStaticBatches();
+    world.traverse(function(o){ if(o.isMesh && !o.userData.batched && o.material && o.material.userData && o.material.userData.fabric) fabricUV(o.geometry); });
 
     /* The same idea taken to everything else. Furniture, doors, plants and
        fittings are built as hundreds of small meshes, and nothing in the
@@ -8573,7 +9411,7 @@ main:focus{outline:none}
       portal(d.x, d.z, Math.abs(Math.sin(d.rotY)) > 0.5, d.w + 0.1, Math.min(2.4, d.h - 0.3));
     });
     portal( 1.0,  6.0, false, 13.4, 2.6);   /* great room ↔ terrace, the sliding glass wall */
-    portal( 8.0,  3.4, true,   4.4, 2.5);   /* dining ↔ kitchen                            */
+    portal( 8.0,  2.05, true,  1.6, 2.5);   /* dining ↔ kitchen, the walk-in end of the opening */
     portal( 0.5, -8.0, false,  9.0, 2.4);   /* foyer ↔ great room                          */
     portal( 9.6, -2.0, false,  2.0, 2.5);   /* east hall ↔ kitchen                         */
     portal(-1.1, -13.11, false, 1.5, 2.3);  /* the front door: entry ↔ foyer               */
@@ -8889,13 +9727,25 @@ main:focus{outline:none}
       var k = g.t / g.dur, yaw;
       if(g.L < 0.3) yaw = g.y0 + wrapAngle(g.y1 - g.y0) * smooth(k);
       else {
-        var b = Math.min(g.L, s + 1.4), pa = pointAt(g, Math.max(0, b - 1.4)), pb = pointAt(g, b);
+        var LA = Math.max(1.4, 0.9 * g.vc);   /* look further ahead on the fast, long routes, so the turns stay slow and the head does not whip round */
+        var b = Math.min(g.L, s + LA), pa = pointAt(g, Math.max(0, b - LA)), pb = pointAt(g, b);
         var gaze = yawTo(pb.x - pa.x, pb.z - pa.z);
-        var ls = Math.min(1.4, g.L * 0.35), le = Math.min(2.2, g.L * 0.45);
-        yaw = g.y0 + wrapAngle(gaze - g.y0) * smooth(Math.min(1, s / ls));
-        yaw += wrapAngle(g.y1 - yaw) * smooth(Math.max(0, Math.min(1, (s - (g.L - le)) / le)));
+        var ls = Math.min(LA, g.L * 0.35), le = Math.min(2.2 * LA / 1.4, g.L * 0.45);
+        /* the turns are tracked as continuous angles (never the 'short way round' worked out fresh
+           each frame), so a view that faces the way you came cannot flip the head from one side to
+           the other in a single frame */
+        if(g.gU === undefined) g.gU = g.y0 + wrapAngle(gaze - g.y0); else g.gU += wrapAngle(gaze - g.gU);
+        yaw = g.y0 + (g.gU - g.y0) * smooth(Math.min(1, s / ls));
+        var we = smooth(Math.max(0, Math.min(1, (s - (g.L - le)) / le)));
+        if(we > 0){
+          if(g.dE === undefined) g.dE = wrapAngle(g.y1 - yaw); else g.dE += wrapAngle((g.y1 - yaw) - g.dE);
+          yaw += g.dE * we;
+        }
       }
-      cam.yaw = yaw;
+      /* a soft low-pass on the head turn (about 0.3 s), so a sharp corner on a fast route turns
+         over a few frames, not one */
+      if(g.fy === undefined) g.fy = yaw; else g.fy += (yaw - g.fy) * (1 - Math.exp(-dt / Math.max(0.03, 0.3 * Math.min(1, (g.dur - g.t) / 0.8))));   /* the lag closes up over the last 0.8 s, so the walk stops exactly on the resting view */
+      cam.yaw = g.fy;
       var prog = smooth(g.Wt > 1e-6 ? w / g.Wt : k);
       cam.pitch = g.q0 + (g.q1 - g.q0) * prog;
       camera.fov = g.f0 + (g.f1 - g.f0) * prog;
@@ -8974,10 +9824,11 @@ main:focus{outline:none}
        surface instead of speckling where the two shaders round differently. */
     var prePassMat = new T.MeshBasicMaterial({ colorWrite:false, polygonOffset:true, polygonOffsetFactor:1, polygonOffsetUnits:1 });
     var notInPrePass = null;
-    function drawScene(r){
+    function drawScene(r, cm){
+      cm = cm || camera;
       /* the frame that bakes the shadow map draws plainly, so the bake sees
          every caster — including the foliage the pre-pass hides */
-      if(renderer.shadowMap.needsUpdate){ r.render(scene, camera); return; }
+      if(renderer.shadowMap.needsUpdate){ r.render(scene, cm); return; }
       if(!notInPrePass){
         notInPrePass = [];
         scene.traverse(function(o){
@@ -9000,11 +9851,11 @@ main:focus{outline:none}
         var o = notInPrePass[i];
         if(o.visible){ o.visible = false; hidden.push(o); }
       }
-      r.render(scene, camera);
+      r.render(scene, cm);
       for(var j = 0; j < hidden.length; j++) hidden[j].visible = true;
       scene.overrideMaterial = null;
       scene.background = bg;
-      r.render(scene, camera);
+      r.render(scene, cm);
       r.autoClear = autoClear;
     }
 
@@ -9338,6 +10189,7 @@ main:focus{outline:none}
     var frameAvg = 16, frameN = 0, quality = 2;
     function holdFrameRate(dt){
       frameAvg += (dt * 1000 - frameAvg) * 0.05;
+      if(mirrorsLive && !mirrorsOff && frameN > 60 && frameAvg > 28) mirrorsOff = true;   /* under ~36 fps with a live mirror in view: drop the reflection first */
       if(++frameN < 60 || quality === 0) return;
       if(frameAvg < 19.5) return;
       frameN = 0;
@@ -9364,6 +10216,85 @@ main:focus{outline:none}
         lensW = lensH = 0;
         sizeLens();
       }
+    }
+
+    /* the live mirrors: for the two nearest mirrors in view and facing you, draw the
+       house again from where your reflection stands, into a half-size buffer */
+    var mirrorCam = new T.PerspectiveCamera(), mFrustum = new T.Frustum(), mPV = new T.Matrix4(), mRot = new T.Matrix4();
+    var mView = new T.Vector3(), mCamPos = new T.Vector3(), mLook = new T.Vector3(), mTarget = new T.Vector3();
+    var mPlane = new T.Plane(), mClip = new T.Vector4(), mQ = new T.Vector4(), mSph = new T.Sphere(), mTexM = new T.Matrix4();
+    var MIRROR_MAX = 2, mirrorsOff = false, mirrorsLive = false, mirrorTick = 0;   /* mirrorsOff: a slow machine falls back to the soft panels, for good, before it loses anything else */
+    function updateMirrors(){
+      if(!MIRRORS.length) return;
+      var on = !!composer && !lowPower && !mirrorsOff && MODE === 'walk';
+      var live = [];
+      if(on){
+        camera.updateMatrixWorld();
+        mPV.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+        mFrustum.setFromProjectionMatrix(mPV);
+        mCamPos.setFromMatrixPosition(camera.matrixWorld);
+        MIRRORS.forEach(function(m){
+          mView.subVectors(mCamPos, m.c);
+          var dist = mView.length();
+          if(dist > 12 || mView.dot(m.n) <= 0.1) return;
+          mSph.set(m.c, m.r);
+          if(!mFrustum.intersectsSphere(mSph)) return;
+          m.dist = dist; live.push(m);
+        });
+        live.sort(function(a, b){ return a.dist - b.dist; });
+        live.length = Math.min(live.length, MIRROR_MAX);
+      }
+      MIRRORS.forEach(function(m){ if(live.indexOf(m) < 0){ m.rendered = false; if(m.mesh.visible) m.mesh.visible = false; } });
+      mirrorsLive = live.length > 0;
+      if(!live.length) return;
+      var size = renderer.getDrawingBufferSize(new T.Vector2());
+      var rw = Math.max(256, Math.round(size.x * 0.42)), rh = Math.max(144, Math.round(size.y * 0.42));
+      var keepRT = renderer.getRenderTarget();
+      mirrorTick++;
+      live.forEach(function(m, li){
+        /* with two mirrors in view they take turns: each is redrawn every other frame (its last picture stays on
+           the glass in between), so a bathroom costs one extra draw of the house per frame, not two */
+        if(m.rt && m.rendered && m.rt.width === rw && m.rt.height === rh && live.length > 1 && ((mirrorTick + li) & 1)){ m.mesh.visible = true; return; }
+        if(!m.rt || m.rt.width !== rw || m.rt.height !== rh){
+          if(m.rt) m.rt.dispose();
+          m.rt = new T.WebGLRenderTarget(rw, rh, { minFilter:T.LinearFilter, magFilter:T.LinearFilter, format:T.RGBAFormat });
+          if(T.sRGBEncoding) m.rt.texture.encoding = T.sRGBEncoding;
+        }
+        var pl = m.mesh;
+        /* the camera as seen in the glass: mirrored across the panel's plane */
+        mView.subVectors(m.c, mCamPos);
+        mView.reflect(m.n).negate().add(m.c);
+        mRot.extractRotation(camera.matrixWorld);
+        mLook.set(0, 0, -1).applyMatrix4(mRot).add(mCamPos);
+        mTarget.subVectors(m.c, mLook).reflect(m.n).negate().add(m.c);
+        mirrorCam.position.copy(mView);
+        mirrorCam.up.set(0, 1, 0).applyMatrix4(mRot).reflect(m.n);
+        mirrorCam.lookAt(mTarget);
+        mirrorCam.far = camera.far; mirrorCam.near = camera.near;
+        mirrorCam.updateMatrixWorld();
+        mirrorCam.projectionMatrix.copy(camera.projectionMatrix);
+        mTexM.set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1);
+        mTexM.multiply(mirrorCam.projectionMatrix).multiply(mirrorCam.matrixWorldInverse).multiply(pl.matrixWorld);
+        /* cut off everything behind the glass, so the wall it hangs on is not drawn into the picture */
+        mPlane.setFromNormalAndCoplanarPoint(m.n, m.c).applyMatrix4(mirrorCam.matrixWorldInverse);
+        mClip.set(mPlane.normal.x, mPlane.normal.y, mPlane.normal.z, mPlane.constant);
+        var pm = mirrorCam.projectionMatrix.elements;
+        mQ.x = (Math.sign(mClip.x) + pm[8]) / pm[0];
+        mQ.y = (Math.sign(mClip.y) + pm[9]) / pm[5];
+        mQ.z = -1.0;
+        mQ.w = (1.0 + pm[10]) / pm[14];
+        mClip.multiplyScalar(2.0 / mClip.dot(mQ));
+        pm[2] = mClip.x; pm[6] = mClip.y; pm[10] = mClip.z + 1.0 - 0.003; pm[14] = mClip.w;
+        pl.visible = false;
+        renderer.setRenderTarget(m.rt);
+        renderer.clear(true, true, true);
+        renderer.render(scene, mirrorCam);   /* no depth pre-pass here: at half size the extra pass costs more than it saves */
+        m.rendered = true;
+        pl.material.uniforms.tMap.value = m.rt.texture;
+        pl.material.uniforms.textureMatrix.value.copy(mTexM);
+        pl.visible = true;
+      });
+      renderer.setRenderTarget(keepRT);
     }
 
     function tick(){
@@ -9401,6 +10332,7 @@ main:focus{outline:none}
       updateLightPool(dt);
       driveLens(dt);
       holdFrameRate(dt);
+      updateMirrors();
       if(composer) composer.render(dt);
       else { renderer.setRenderTarget(null); drawScene(renderer); }
     }
@@ -9435,8 +10367,16 @@ main:focus{outline:none}
     var GIU = {
       giAtlas: { value: null },
       giBox: { value: new T.Vector4(GI_X0, GI_Z0, 1 / (GI_N * GI_CELL), 1 / (GI_N * GI_CELL)) },
-      giOut: { value: [new T.Vector3(), new T.Vector3(), new T.Vector3(), new T.Vector3()] }
+      giOut: { value: [new T.Vector3(), new T.Vector3(), new T.Vector3(), new T.Vector3()] },
+      giWind: windT,
+      giPalm: { value: null }
     };
+    /* where, as the sun sees the lot, the palm crowns are: drawn once after
+       the shadow map, so their shade can sway with the fronds (below)
+       without the shadow map ever being drawn again */
+    var giPalmCanvas = document.createElement('canvas');
+    giPalmCanvas.width = giPalmCanvas.height = 256;
+    GIU.giPalm.value = new T.CanvasTexture(giPalmCanvas);
     var giLum = null, giRef = 1, giRoofProbe = null;
     /* ceilings, where they are not the standard 3.2m: above this height a
        surface facing up is a roof top, and is lit as outdoors */
@@ -9460,7 +10400,7 @@ main:focus{outline:none}
        match wherever less light actually arrives (inside, under the roof) */
     var GI_EDGE = (0.5 / GI_N).toFixed(6);
     var GI_PARS = [
-      'uniform sampler2D giAtlas; uniform vec4 giBox; uniform vec3 giOut[4];',
+      'uniform sampler2D giAtlas; uniform vec4 giBox; uniform vec3 giOut[4]; uniform float giWind; uniform sampler2D giPalm;',
       'vec3 giIrr(vec3 c0, vec3 cx, vec3 cy, vec3 cz, vec3 n){ return max(vec3(0.0), 0.886227 * c0 + 1.023328 * (cx * n.x + cy * n.y + cz * n.z)); }'
     ].join('\n');
     var GI_APPLY = [
@@ -9497,6 +10437,14 @@ main:focus{outline:none}
       '  shadowCoord.xyz /= shadowCoord.w;',
       '  shadowCoord.z += shadowBias;',
       '  if(shadowCoord.x < 0.0 || shadowCoord.x > 1.0 || shadowCoord.y < 0.0 || shadowCoord.y > 1.0 || shadowCoord.z > 1.0) return 1.0;',
+      /* under a palm crown the shade sways with the wind (about 10cm) and
+         the leaflets flicker it (a few cm), the fronds' own motion */
+      '  vec4 pz = texture2D(giPalm, shadowCoord.xy);',
+      '  if(pz.a > 0.004){',
+      '    float ph = pz.g * 25.0;',
+      '    shadowCoord.xy += pz.a * (vec2(sin(giWind * 1.05 + ph) * 0.6 + sin(giWind * 2.2 + ph * 1.7) * 0.4, sin(giWind * 1.6 + ph * 2.3)) * 0.0013',
+      '      + vec2(sin(giWind * 6.5 + shadowCoord.y * 900.0 + ph), cos(giWind * 5.3 + shadowCoord.x * 900.0)) * 0.00035);',
+      '  }',
       '  vec2 tx = 1.0 / shadowMapSize;',
       '  float a0 = 6.2831853 * fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));',
       '  float bs = 0.0, bn = 0.0;',
@@ -9528,6 +10476,7 @@ main:focus{outline:none}
           m.onBeforeCompile = function(sh, r){
             prev.call(this, sh, r);
             sh.uniforms.giAtlas = GIU.giAtlas; sh.uniforms.giBox = GIU.giBox; sh.uniforms.giOut = GIU.giOut;
+            sh.uniforms.giWind = GIU.giWind; sh.uniforms.giPalm = GIU.giPalm;
             sh.fragmentShader = sh.fragmentShader
               .replace('#include <common>', '#include <common>\n' + GI_PARS)
               .replace('#include <shadowmap_pars_fragment>', SHADOW_PARS)
@@ -9667,6 +10616,10 @@ main:focus{outline:none}
     /* spread the probes over a 25cm grid covering the whole lot: each cell
        takes the probes of the room it is in, weighted by distance, so the
        light changes smoothly across a room and sharply at its walls */
+    var LAMP_BAKE = 4.0, FILL_UP = lowPower ? 0.0 : 0.3;
+    /* rooms with dark finishes or no window get a little more of the
+       photographer's fill than the formula alone gives */
+    var GI_LIFT = { GREAT: 1.4, FOYER: 2.6, PBATH: 1.5, EHALL: 1.15, WHALL: 1.1, POWDER: 1.3, PCLOSET: 1.3, POOLBATH: 0.75, BR2BATH: 1.5, BR3BATH: 1.2, BR4BATH: 1.2 };
     function giBuild(pr, final){
       var N = GI_N, W2 = 2 * N, data = GIU.giAtlas.value.image.data, toHalf = T.DataUtils.toHalfFloat;
       /* The photographer's fill. An interior shoot lights a dark room so it
@@ -9678,8 +10631,13 @@ main:focus{outline:none}
         var L = 0;
         r.giProbes.forEach(function(p){ L += 0.2126 * p.sh[0] + 0.7152 * p.sh[1] + 0.0722 * p.sh[2]; });
         L /= Math.max(1, r.giProbes.length);
-        r.giFill = (final && r.giCeil < 50) ? Math.max(1, Math.min(8, 2.4 / Math.max(L, 0.05))) : 1;
+        r.giFill = (final && r.giCeil < 50) ? Math.max(1, Math.min(lowPower ? 8 : 30, 2.4 / Math.max(L, lowPower ? 0.05 : 0.03))) * (lowPower ? 1 + ((GI_LIFT[r.key] || 1) - 1) * 0.5 : (GI_LIFT[r.key] || 1)) : 1;
       });
+      /* Every lamp in the house, not only the few nearest the viewer that
+         get a real light, also warms the room around it: worked out once
+         here, for the height of a table or worktop, so it is free every
+         frame. Lamps light only the room they hang in. */
+      var lamps = final ? VLIGHTS.map(function(v){ return { v: v, room: giRoomAt(v.p.x, v.p.z) }; }).filter(function(l){ return l.room; }) : [];
       var sh = new Float32Array(12);
       giLum = new Float32Array(N * N);
       for(var zi = 0; zi < N; zi++) for(var xi = 0; xi < N; xi++){
@@ -9706,13 +10664,33 @@ main:focus{outline:none}
           var cl = 0.2126 * sh[q2] + 0.7152 * sh[q2 + 1] + 0.0722 * sh[q2 + 2], k2 = (q2 ? 0.8 * Math.sqrt(fill) : fill) / ws;
           sh[q2] = (cl + (sh[q2] - cl) * 0.5) * k2; sh[q2 + 1] = (cl + (sh[q2 + 1] - cl) * 0.5) * k2; sh[q2 + 2] = (cl + (sh[q2 + 2] - cl) * 0.5) * k2;
         }
+        /* ...and a bounce off the ceiling comes down from above: worktops,
+           tables and floors take most of it, the ceiling itself the least,
+           as in a real room (not the other way round, as the sunlit floor
+           alone would have it) */
+        if(fill > 1) for(var fc = 0; fc < 3; fc++) sh[6 + fc] += FILL_UP * sh[fc] * (fill - 1) / fill;
         var ceil = room ? room.giCeil : 100;
+        var lumNoLamp = 0.2126 * sh[0] + 0.7152 * sh[1] + 0.0722 * sh[2];
+        for(var li = 0; li < lamps.length; li++){
+          var lv = lamps[li].v;
+          if(lamps[li].room !== room) continue;
+          var lx = lv.p.x - x, ly = lv.p.y - (FL + 0.85), lz = lv.p.z - z, ld = Math.sqrt(lx * lx + ly * ly + lz * lz) + 0.35, lr = lv.d * 1.6;
+          if(ld >= lr) continue;
+          var la = 1 - ld / lr, le = LAMP_BAKE * lv.i * la * la;
+          lx /= ld; ly /= ld; lz /= ld;
+          for(var lc = 0; lc < 3; lc++){
+            var lcol = le * (lc === 0 ? lv.c.r : lc === 1 ? lv.c.g : lv.c.b);
+            sh[lc] += lcol * 0.282095; sh[3 + lc] += lcol * 0.488603 * lx; sh[6 + lc] += lcol * 0.488603 * ly; sh[9 + lc] += lcol * 0.488603 * lz;
+          }
+        }
         var o0 = (zi * W2 + xi) * 4, o1 = o0 + N * 4, o2 = ((zi + N) * W2 + xi) * 4, o3 = o2 + N * 4;
         data[o0] = toHalf(sh[0]); data[o0 + 1] = toHalf(sh[1]); data[o0 + 2] = toHalf(sh[2]); data[o0 + 3] = toHalf(ceil);
         data[o1] = toHalf(sh[3]); data[o1 + 1] = toHalf(sh[4]); data[o1 + 2] = toHalf(sh[5]);
         data[o2] = toHalf(sh[6]); data[o2 + 1] = toHalf(sh[7]); data[o2 + 2] = toHalf(sh[8]);
         data[o3] = toHalf(sh[9]); data[o3 + 1] = toHalf(sh[10]); data[o3 + 2] = toHalf(sh[11]);
-        giLum[zi * N + xi] = 0.2126 * sh[0] + 0.7152 * sh[1] + 0.0722 * sh[2];
+        /* the eye meters the room partly as it really is: a room that needed a
+           lot of fill still opens the exposure up, as a photographer's would */
+        giLum[zi * N + xi] = lumNoLamp / Math.sqrt(fill);
       }
       GIU.giAtlas.value.needsUpdate = true;
       var R = giRoofProbe.sh;
@@ -9746,6 +10724,20 @@ main:focus{outline:none}
     renderer.shadowMap.needsUpdate = true;
     renderer.render(scene, camera);
     if(GI){
+      (function(){
+        var g = giPalmCanvas.getContext('2d'), S = giPalmCanvas.width, v = new T.Vector3();
+        palmTops.forEach(function(t, i){
+          v.copy(t.p).applyMatrix4(sun.shadow.matrix);
+          var cx = v.x * S, cy = (1 - v.y) * S, r = t.r / (sun.shadow.camera.right - sun.shadow.camera.left) * S;
+          var ph = Math.round((i * 0.618034 % 1) * 255), grd = g.createRadialGradient(cx, cy, 0, cx, cy, r);
+          /* weakest at the trunk, which does not sway */
+          grd.addColorStop(0, 'rgba(255,' + ph + ',0,0.25)');
+          grd.addColorStop(0.55, 'rgba(255,' + ph + ',0,1)');
+          grd.addColorStop(1, 'rgba(255,' + ph + ',0,0)');
+          g.fillStyle = grd; g.fillRect(cx - r, cy - r, 2 * r, 2 * r);
+        });
+        GIU.giPalm.value.needsUpdate = true;
+      })();
       var giPr = giProbes();
       /* outdoors first: the open sky and the sunlit ground */
       giCapture(giPr.outside); giBuild(giPr);
@@ -9868,14 +10860,17 @@ main:focus{outline:none}
           'It needs a connection the first time it opens. Close this to go back to the property — nothing else on the page depends on it.');
         return;
       }
-      try{
-        tourView = buildRichTourView(window.THREE);
-        tourMessageOff();
-        tourView.start();
-      } catch(e){
-        tourMessage('The model couldn’t load',
-          'Something went wrong preparing the 3D view. Nothing else on the property page is affected.');
-      }
+      preloadTexLib(function(){
+        if(!tourIsOpen) return;
+        try{
+          tourView = buildRichTourView(window.THREE);
+          tourMessageOff();
+          tourView.start();
+        } catch(e){
+          tourMessage('The model couldn’t load',
+            'Something went wrong preparing the 3D view. Nothing else on the property page is affected.');
+        }
+      });
     });
   }
 
