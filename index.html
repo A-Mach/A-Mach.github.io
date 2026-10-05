@@ -522,6 +522,17 @@ body.tour-open{overflow:hidden}
 .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--s6)}
 @media(max-width:880px){.grid3{grid-template-columns:1fr 1fr}}
 @media(max-width:580px){.grid3{grid-template-columns:1fr}}
+/* "Also at…" on a property page: one swipeable row on phones and tablets, like the home page */
+@media(max-width:880px){
+  #prop-related .grid3{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;gap:var(--s5);padding-bottom:var(--s3)}
+  #prop-related .grid3>.card{flex:0 0 min(18rem,78vw);scroll-snap-align:start}
+}
+/* long property description: first three paragraphs show, the rest sit behind a native details toggle */
+.desc-more summary{cursor:pointer;margin-top:var(--s5);font-family:var(--sans);font-size:.9rem;font-weight:500;text-decoration:underline;text-underline-offset:4px;list-style:none}
+.desc-more summary::-webkit-details-marker{display:none}
+.desc-more .less{display:none}
+.desc-more[open] .more{display:none}
+.desc-more[open] .less{display:inline}
 
 /* flagship */
 .flagship{position:relative;width:100vw;margin-left:calc(50% - 50vw);min-height:96vh;
@@ -3757,6 +3768,19 @@ main:focus{outline:none}
     } catch(e){}
   }
 
+  /* Long description: keep the first three paragraphs, fold the rest behind a toggle (words unchanged). */
+  function foldPropertyDescription(root){
+    var col = root.querySelectorAll('#prop-understanding .grid2 > div')[1];
+    if(!col) return;
+    var paras = [].slice.call(col.querySelectorAll(':scope > p.lede'));
+    if(paras.length <= 3) return;
+    var more = document.createElement('details');
+    more.className = 'desc-more';
+    more.innerHTML = '<summary><span class="more">Read the full description</span><span class="less">Show less</span></summary>';
+    paras.slice(3).forEach(function(p){ more.appendChild(p); });
+    col.appendChild(more);
+  }
+
   function renderPropertyContent(slug, cardAnchor){
     var root = pages.property;
     if(!root) return;
@@ -3782,6 +3806,7 @@ main:focus{outline:none}
 
     if(slug === 'the-isles-13'){
       try{ if(sheet) sheet.applyToRoot(root); } catch(e){}
+      try{ foldPropertyDescription(root); } catch(e){}
       wirePropertyCards();
       wirePageLinks();
       wireInquiryForms();
@@ -3926,6 +3951,7 @@ main:focus{outline:none}
         } else {
           descCol.hidden = true;
         }
+        foldPropertyDescription(root);
 
         understandingSec.hidden = !(anyFinancial || descText);
       }
