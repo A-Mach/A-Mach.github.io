@@ -684,7 +684,36 @@ input,select,textarea{width:100%;font-family:var(--sans);font-size:.9375rem;padd
 main:focus{outline:none}
 .idx-filter-btn{min-width:44px}
 .tlink{position:relative}
-.tlink::before{content:"";position:absolute;inset:-14px -6px}</style>
+.tlink::before{content:"";position:absolute;inset:-14px -6px}
+/* ============ HOMEPAGE PROPERTIES AS A HORIZONTAL ROW (2026-10-02) ============
+   The "Available now" list is a single swipeable row of cards: a photo, the
+   name, status, specs and price. It is the same list and the same filters;
+   only the layout changed, which also shortens the homepage a lot. No
+   auto-scrolling: the visitor moves it (swipe, arrows, trackpad or keys). */
+/* sections that are both .wrap and .band lost their side padding (the .band shorthand zeroed it),
+   so on phones their text touched the screen edges */
+.wrap.band{padding-left:var(--s5);padding-right:var(--s5)}
+.idx-bar{display:flex;align-items:flex-end;justify-content:space-between;gap:var(--s5)}
+.idx-nav{display:flex;gap:var(--s3);margin-top:var(--s5)}
+.idx-nav button{width:44px;height:44px;border:1px solid var(--rule);border-radius:50%;background:none;color:var(--ink);
+  font-size:1.5rem;line-height:1;padding:0 0 .15rem;cursor:pointer;transition:background .25s,color .25s,opacity .25s}
+.idx-nav button:hover:not([disabled]){background:var(--ink);color:var(--paper)}
+.idx-nav button[disabled]{opacity:.3;cursor:default}
+.idx{display:block;margin-top:var(--s6)}
+.idx-list{display:flex;gap:var(--s5);overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;
+  border-top:0;padding-bottom:var(--s5);scrollbar-width:thin;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}
+.idx-list>.idx-group-label{display:none}
+.idx-row{flex:0 0 min(21rem,78vw);display:flex;flex-direction:column;align-items:stretch;gap:0;padding:0;
+  border-bottom:0;scroll-snap-align:start}
+.idx-row:hover,.idx-row:focus-visible{padding-left:0}
+.idx-thumb{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;background:var(--deep)}
+.idx-row>div:nth-of-type(1){padding-top:var(--s4)}
+.idx-row h3{font-size:clamp(1.2rem,1.6vw,1.5rem);font-weight:300}
+.idx-row .idx-price{margin-top:var(--s3)}
+.idx-comm{display:block;font-family:var(--sans);font-size:.7rem;font-weight:500;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--muted);margin-bottom:var(--s2)}
+@media(hover:none){.idx-nav{display:none}}
+@media(max-width:720px){.idx-bar{display:block}}</style>
 <script id="mcjs">!function(c,h,i,m,p){m=c.createElement(h),p=c.getElementsByTagName(h)[0],m.async=1,m.src=i,p.parentNode.insertBefore(m,p)}(document,"script","https://chimpstatic.com/mcjs-connected/js/users/ee3754c92fe7b13947bcb783a/878308b110602e409c166aa9f.js");</script>
 </head>
 <body>
@@ -986,10 +1015,13 @@ main:focus{outline:none}
   <!-- discovery -->
   <section class="wrap band" data-tone="light">
     <div class="shead"><h2>Available now</h2><span class="meta" id="idxCount">9 properties across 6 communities</span></div>
+    <div class="idx-bar">
     <div class="idx-filter" role="tablist" aria-label="Filter by sale or lease">
       <button type="button" class="idx-filter-btn" data-idx-filter="all" aria-pressed="true">All</button>
       <button type="button" class="idx-filter-btn" data-idx-filter="sale" aria-pressed="false">For Sale</button>
       <button type="button" class="idx-filter-btn" data-idx-filter="lease" aria-pressed="false">For Lease</button>
+    </div>
+    <div class="idx-nav" aria-label="Scroll properties"><button type="button" id="idxPrev" aria-label="Previous properties">&#8249;</button><button type="button" id="idxNext" aria-label="Next properties">&#8250;</button></div>
     </div>
     <div class="idx">
       <div class="idx-list" id="idxList">
@@ -1060,35 +1092,8 @@ main:focus{outline:none}
           <div class="idx-price price" style="font-size:1.15rem" data-slug="royal-palm-d101-lease">$5,500<small>/mo</small></div>
         </a>
       </div>
-      <div class="idx-preview" aria-hidden="true">
-        <img class="on" src="https://cdn.prod.website-files.com/65be6fd519d6a084e48d40f5/69ea458fcdcd698b89587c5b_The%20Isles%2013%201.jpg" alt="">
-        <img src="https://cdn.prod.website-files.com/65be6fd519d6a084e48d40f5/67e30f1602213e72a08ba0ff_Dorado%20Beach%20East%20Lot%208%20Image%2021.avif" alt="">
-        <img src="https://cdn.prod.website-files.com/65be6fd519d6a084e48d40f5/66e3a4de0deb8d44480c15ad_Plantation%20Village%20PH%203-202%20%20Image%201.avif" alt="">
-        <img src="https://cdn.prod.website-files.com/65be6fd519d6a084e48d40f5/69a9f5434ec63b436d6a0bc4_9.avif" alt="">
-        <img src="https://cdn.prod.website-files.com/65be6fd519d6a084e48d40f5/6a90db8722ba3ca809de37c1_Las%20Olas%209A%205.jpg" alt="">
-        <img src="https://cdn.prod.website-files.com/65be6fd519d6a084e48d40f5/6a3b335172b047acf9ca846d_1.jpg" alt="">
-        <img src="https://cdn.prod.website-files.com/65be6fd519d6a084e48d40f5/66eb3c21d0217bcbec918b13_Finca%20Jauca%20Santa%20Isabel%20Image%201-min.avif" alt="">
-        <img src="https://cdn.prod.website-files.com/65be6fd519d6a084e48d40f5/69b1e135b1e2e8bd59ca8c6b_Torre%20Cibeles%20213%20Image%207.jpg" alt="">
-        <img src="https://cdn.prod.website-files.com/65be6fd519d6a084e48d40f5/6a849e6f2d47d01e53743655_The%20Coliseum%20Tower%20Residences%201101%20(1).jpg" alt="">
-        <img src="https://cdn.prod.website-files.com/65be6fd519d6a084e48d40f5/6aa2c91ea5cc1f896e91e605_Casa%20Cervantes%202%20-%206.jpg" alt="">
-      </div>
     </div>
   </section>
-
-  <!-- ONE flagship -->
-  <a class="flagship" href="#" data-tone="dark">
-    <img src="https://cdn.prod.website-files.com/65be6fd519d6a084e48d40f5/6675aaf0eb0b04351033dc63_0R3A1221-1-min.avif" alt="Plantation Village penthouse, Dorado Beach Resort">
-    <span class="flagship-scrim" aria-hidden="true"></span>
-    <span class="flagship-in">
-      <span class="status st-sale" data-slug="plantation-village-penthouse">For Sale</span>
-      <h2 style="margin-top:var(--s5)">Plantation Village PH</h2>
-      <span class="flagship-row">
-        <span class="price" style="color:#fff" data-slug="plantation-village-penthouse">$11,700,000</span>
-        <span class="meta" style="color:rgba(255,255,255,.78)">Dorado Beach Resort</span>
-        <span class="meta" style="color:rgba(255,255,255,.78)" data-slug="plantation-village-penthouse" data-specs-summary="true">5 bedrooms · 4.5 bathrooms · 4,200 sq ft</span>
-      </span>
-    </span>
-  </a>
 
   <!-- Cristina, grounded in verified facts -->
   <section class="dark-sec band" data-tone="dark">
@@ -4100,10 +4105,44 @@ main:focus{outline:none}
     document.querySelectorAll('.idx-filter-btn').forEach(function(b){
       b.setAttribute('aria-pressed', b.dataset.idxFilter===mode ? 'true' : 'false');
     });
+    updateIdxArrows(true);
   }
   document.querySelectorAll('.idx-filter-btn').forEach(function(b){
     b.addEventListener('click', function(){ applyIdxFilter(b.dataset.idxFilter); });
   });
+
+  /* The homepage property list is a horizontal row: each card says which
+     community it is in (copied from the group label that precedes it), and
+     the two arrows move it one card at a time. */
+  function updateIdxArrows(reset){
+    var list = document.getElementById('idxList'), prev = document.getElementById('idxPrev'), next = document.getElementById('idxNext');
+    if(!list || !prev || !next) return;
+    if(reset) list.scrollLeft = 0;
+    prev.disabled = list.scrollLeft < 4;
+    next.disabled = list.scrollLeft + list.clientWidth >= list.scrollWidth - 4;
+  }
+  (function wireIdxRow(){
+    var list = document.getElementById('idxList'), prev = document.getElementById('idxPrev'), next = document.getElementById('idxNext');
+    if(!list) return;
+    var label = '';
+    Array.prototype.forEach.call(list.children, function(el){
+      if(el.classList.contains('idx-group-label')){ label = el.textContent.trim(); return; }
+      var t = el.classList.contains('idx-row') && label ? el.querySelector('div') : null;
+      if(t && !t.querySelector('.idx-comm')){
+        var s = document.createElement('span'); s.className = 'idx-comm'; s.textContent = label; t.insertBefore(s, t.firstChild);
+      }
+    });
+    function step(dir){
+      var card = list.querySelector('.idx-row:not([style*="display: none"])');
+      var w = card ? card.getBoundingClientRect().width + 24 : list.clientWidth * 0.8;
+      list.scrollBy({ left: dir * w, behavior: reduce ? 'auto' : 'smooth' });
+    }
+    if(prev) prev.addEventListener('click', function(){ step(-1); });
+    if(next) next.addEventListener('click', function(){ step(1); });
+    list.addEventListener('scroll', function(){ updateIdxArrows(false); }, { passive: true });
+    window.addEventListener('resize', function(){ updateIdxArrows(false); });
+    updateIdxArrows(false);
+  })();
 
   function wirePageLinks(){
     document.querySelectorAll('[data-page]').forEach(function(t){
@@ -4234,6 +4273,52 @@ main:focus{outline:none}
      below (ported from the standalone 3D demo) — a phone gets lighter
      textures, smaller shadow maps and no depth-of-field pass. */
   var lowPower = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+
+  /* Phone layout. (1) held upright, a quiet prompt asks the visitor to turn the phone sideways (it can be waved
+     away); (2) on a short, sideways screen the bottom bar is made small and sits right at the bottom edge, so it
+     never covers the doorway tags in the scene. Written here, not in the stylesheet, so the standalone page and
+     the site get exactly the same behaviour. */
+  (function phoneLayout(){
+    if(!tourEl) return;
+    var st = document.createElement('style');
+    st.textContent = [
+      '.rotate-hint{position:absolute;inset:0;z-index:20;display:grid;place-items:center;padding:1.5rem;text-align:center;',
+      '  background:rgba(10,10,10,.74);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}',
+      '.rotate-hint[hidden]{display:none}',
+      '.rotate-card{max-width:17rem;color:#fff;font-family:var(--sans)}',
+      '.rotate-phone{display:block;margin:0 auto;animation:rotphone 2.6s ease-in-out infinite}',
+      '.rotate-card p{font-size:.95rem;line-height:1.55;margin:1.1rem 0 1.3rem}',
+      '.rotate-card button{background:none;border:1px solid rgba(255,255,255,.4);color:#fff;font-family:var(--sans);',
+      '  font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;padding:.65rem 1.1rem;min-height:44px;cursor:pointer}',
+      '@keyframes rotphone{0%,25%{transform:rotate(0)}60%,100%{transform:rotate(-90deg)}}',
+      '@media (prefers-reduced-motion:reduce){.rotate-phone{animation:none;transform:rotate(-90deg)}}',
+      '@media (max-height:520px){',
+      '  .tour-ui{padding:calc(env(safe-area-inset-top,0px) + .55rem) .9rem calc(env(safe-area-inset-bottom,0px) + .4rem)}',
+      '  .tour-eyebrow{display:none} .tour-title{font-size:1rem;margin-top:0}',
+      '  .t3d-room{margin-top:.15rem;font-size:.95rem}',
+      '  .rail{margin-top:.25rem;gap:5px} .rail button{font-size:.62rem;padding:.32rem .6rem}',
+      '  .tour-bottom{flex-direction:row;align-items:flex-end;gap:.8rem;margin-top:.25rem}',
+      '  .tour-note{font-size:.58rem;line-height:1.4;max-width:none;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}',
+      '  .tour-hint{display:none}',
+      '}'
+    ].join('\n');
+    document.head.appendChild(st);
+    var hint = document.createElement('div');
+    hint.className = 'rotate-hint'; hint.hidden = true;
+    hint.innerHTML = '<div class="rotate-card"><svg class="rotate-phone" viewBox="0 0 48 48" width="60" height="60" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="15" y="5" width="18" height="38" rx="3"/><line x1="21.5" y1="38" x2="26.5" y2="38"/></svg>'
+      + '<p>Turn your phone sideways for the best view of the walkthrough.</p><button type="button">Continue anyway</button></div>';
+    tourEl.appendChild(hint);
+    var waved = false;
+    function sync(){
+      var touch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+      var upright = window.matchMedia('(orientation: portrait)').matches && window.innerWidth <= 820;
+      hint.hidden = !(tourIsOpen && touch && upright && !waved);
+    }
+    hint.querySelector('button').addEventListener('click', function(){ waved = true; sync(); });
+    window.addEventListener('resize', sync);
+    window.addEventListener('orientationchange', sync);
+    window.__ldreRotateSync = sync;
+  })();
   var THREE_POST = 'https://cdn.jsdelivr.net/npm/three@0.134.0/examples/js/';
   var THREE_POST_SRCS = [
     'shaders/CopyShader.js',
@@ -4338,8 +4423,8 @@ main:focus{outline:none}
 
     var stage = tourStage;
 
-    var renderer = new T.WebGLRenderer({ antialias:!lowPower, powerPreference:'high-performance' });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, lowPower ? 1.5 : 2));
+    var renderer = new T.WebGLRenderer({ antialias:true, powerPreference:'high-performance' });   /* phones too: without it every edge was a staircase (phones have no post pass, so no FXAA either) */
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));   /* phones too: 1.5 left them at about half their real pixels */
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = T.PCFSoftShadowMap;
@@ -7501,25 +7586,25 @@ main:focus{outline:none}
 
       /* the pale-oak four-poster, facing the glass and the pool */
       var BX = -15.0, BZ = 2.2;
-      bx(2.10, 0.34, 2.20, BX, FL + 0.21, BZ + 0.9, mAsh);              /* base */
-      bx(2.20, 0.30, 0.10, BX, FL + 0.62, BZ - 0.15, mAsh);             /* headboard rail */
+      bx(2.10, 0.34, 2.20, BX, FL + 0.21, BZ + 0.9, mCab);              /* base */
+      bx(2.20, 0.30, 0.10, BX, FL + 0.62, BZ - 0.15, mCab);             /* headboard rail */
       rbx(1.98, 0.70, 0.10, BX, FL + 0.90, BZ - 0.10, mGreige, 0.05, undefined, 0.035);   /* padded headboard */
       for(var p=0;p<4;p++){
         var px = BX + (p%2 ? 1.06 : -1.06), pz = BZ + (p<2 ? -0.10 : 1.96);
-        bx(0.075, 2.05, 0.075, px, FL + 1.03, pz, mAsh);
+        bx(0.075, 2.05, 0.075, px, FL + 1.03, pz, mCab);
       }
-      bx(2.20, 0.07, 0.07, BX, FL + 2.02, BZ - 0.10, mAsh);
-      bx(2.20, 0.07, 0.07, BX, FL + 2.02, BZ + 1.96, mAsh);
-      bx(0.07, 0.07, 2.13, BX - 1.06, FL + 2.02, BZ + 0.93, mAsh);
-      bx(0.07, 0.07, 2.13, BX + 1.06, FL + 2.02, BZ + 0.93, mAsh);
+      bx(2.20, 0.07, 0.07, BX, FL + 2.02, BZ - 0.10, mCab);
+      bx(2.20, 0.07, 0.07, BX, FL + 2.02, BZ + 1.96, mCab);
+      bx(0.07, 0.07, 2.13, BX - 1.06, FL + 2.02, BZ + 0.93, mCab);
+      bx(0.07, 0.07, 2.13, BX + 1.06, FL + 2.02, BZ + 0.93, mCab);
       /* the bedding: white duvet, blush throw, navy and cream pillows */
       var bd = makeBedding(2.10, 2.02, 2.20, 5);
       bd.position.set(BX, FL + 0.38, BZ - 0.20);
       world.add(bd);
 
       /* bedside tables */
-      bx(0.52, 0.48, 0.42, BX - 1.52, FL + 0.24, BZ + 0.30, mAsh);
-      bx(0.52, 0.48, 0.42, BX + 1.52, FL + 0.24, BZ + 0.30, mAsh);
+      bx(0.52, 0.48, 0.42, BX - 1.52, FL + 0.24, BZ + 0.30, mCab);
+      bx(0.52, 0.48, 0.42, BX + 1.52, FL + 0.24, BZ + 0.30, mCab);
 
       /* the amber glass chandelier over the foot of the bed */
       var chand = new T.Group();
@@ -7538,7 +7623,7 @@ main:focus{outline:none}
       /* a bench at the foot of the bed */
       rbx(1.50, 0.12, 0.44, BX, FL + 0.46, BZ + 2.55, mLinenLt, 0.05);
       [[-0.66,-0.16],[0.66,-0.16],[-0.66,0.16],[0.66,0.16]].forEach(function(o){
-        bx(0.05, 0.40, 0.05, BX + o[0], FL + 0.20, BZ + 2.55 + o[1], mAsh);
+        bx(0.05, 0.40, 0.05, BX + o[0], FL + 0.20, BZ + 2.55 + o[1], mCab);
       });
 
       /* sheer curtain at the corner glazing */
@@ -7604,7 +7689,7 @@ main:focus{outline:none}
     (function others(){
       function guestBed(x, z, rot){
         var g = new T.Group();
-        g.add(new T.Mesh(new T.BoxGeometry(1.72, 0.36, 2.05), mAsh));   /* down to the floor */
+        g.add(new T.Mesh(new T.BoxGeometry(1.72, 0.36, 2.05), mCab));   /* down to the floor */
         g.children[0].position.y = 0.18;
         g.add(new T.Mesh(puffGeo(1.80, 0.80, 0.10, 0.05, 0.035), mGreige));   /* upholstered headboard */
         g.children[1].position.set(0, 0.60, -1.05);
@@ -7919,6 +8004,8 @@ main:focus{outline:none}
       world.add(chand);
       cyl(0.006, 0.006, 0.75, 0.9, FL + 3.0, -10.4, mChrome, 6);
       glow(0.9, FL + 2.45, -10.4, 0.60, 0xFFD9A0, 0.36);
+      /* the foyer floor sat in deep shade under the raised ceiling and read near-black: three unseen ceiling lamps (they light the baked room and the nearest-lights pool) bring it up to the stone's real tone */
+      [[-1.6, -10.5], [1.0, -11.2], [3.4, -10.2]].forEach(function(lp){ vlight(0xFFF1DC, 1.5, 8.0, lp[0], FL + 3.3, lp[1]); });
 
       /* ===== the open floor between the foyer and the living seating ===== */
       /* a conversation corner: two blush and navy armchairs facing each other over a small marble table */
@@ -8214,7 +8301,7 @@ main:focus{outline:none}
               suites rather than a bed dropped into an empty box ---- */
       [[13.0, -12.83], [13.0, -6.76], [-12.0, -11.83]].forEach(function(b){
         [-1.16, 1.16].forEach(function(dx){
-          bx(0.46, 0.44, 0.40, b[0] + dx, FL + 0.22, b[1] - 0.90, mAsh);
+          bx(0.46, 0.44, 0.40, b[0] + dx, FL + 0.22, b[1] - 0.90, mCab);
           cyl(0.085, 0.10, 0.045, b[0] + dx, FL + 0.47, b[1] - 0.90, mBronze, 12);
           cyl(0.015, 0.015, 0.30, b[0] + dx, FL + 0.64, b[1] - 0.90, mBronze, 8);
           var shade = new T.Mesh(new T.CylinderGeometry(0.135, 0.175, 0.24, 16), mAmber);
@@ -8227,7 +8314,7 @@ main:focus{outline:none}
         bn.castShadow = true; bn.receiveShadow = true;
         world.add(bn);
         [[-0.52,-0.14],[0.52,-0.14],[-0.52,0.14],[0.52,0.14]].forEach(function(o){
-          bx(0.05, 0.40, 0.05, b[0] + o[0], FL + 0.20, b[1] + 1.30 + o[1], mAsh);
+          bx(0.05, 0.40, 0.05, b[0] + o[0], FL + 0.20, b[1] + 1.30 + o[1], mCab);
         });
       });
     })();
@@ -8246,7 +8333,7 @@ main:focus{outline:none}
       /* the desk, floating on ash against the east wall like the
          vanities elsewhere in the house */
       bx(0.56, 0.05, 1.9, 12.55, FL + 0.76, -17.6, mQuartz);
-      bx(0.50, 0.70, 1.7, 12.50, FL + 0.38, -17.6, mAshV);
+      bx(0.50, 0.70, 1.7, 12.50, FL + 0.38, -17.6, mCab);
       art(12.88, FL + 1.75, -17.6, -Math.PI/2, 1.0, 1.3, mArt2);
 
       /* a task chair */
@@ -8270,12 +8357,12 @@ main:focus{outline:none}
          front of the room's only window — now a real open bookcase (back,
          sides, shelves) kept below the sill so the window reads. */
       var mBookA = M(0x8C6A4E,0.9,0,{env:0.2}), mBookB = M(0x3E4A55,0.9,0,{env:0.2}), mBookC = M(0xB05C42,0.9,0,{env:0.2});
-      bx(3.6, 0.04, 0.36, 10.6, FL + 0.84, -19.27, mAshV);          /* top    */
-      bx(3.6, 0.08, 0.34, 10.6, FL + 0.04, -19.28, mAshV);          /* plinth */
-      bx(0.04, 0.86, 0.36, 8.82, FL + 0.43, -19.27, mAshV);         /* sides  */
-      bx(0.04, 0.86, 0.36, 12.38, FL + 0.43, -19.27, mAshV);
-      bx(3.56, 0.78, 0.02, 10.6, FL + 0.44, -19.44, mAshV, false);  /* back   */
-      bx(3.52, 0.03, 0.34, 10.6, FL + 0.44, -19.27, mAsh, false);   /* shelf  */
+      bx(3.6, 0.04, 0.36, 10.6, FL + 0.84, -19.27, mCab);          /* top    */
+      bx(3.6, 0.08, 0.34, 10.6, FL + 0.04, -19.28, mCab);          /* plinth */
+      bx(0.04, 0.86, 0.36, 8.82, FL + 0.43, -19.27, mCab);         /* sides  */
+      bx(0.04, 0.86, 0.36, 12.38, FL + 0.43, -19.27, mCab);
+      bx(3.56, 0.78, 0.02, 10.6, FL + 0.44, -19.44, mCab, false);  /* back   */
+      bx(3.52, 0.03, 0.34, 10.6, FL + 0.44, -19.27, mCab, false);   /* shelf  */
       for(var b2=0;b2<10;b2++){
         var bh = 0.20 + Math.random()*0.10;
         var lvl = (b2 % 2) ? FL + 0.455 : FL + 0.08;
@@ -9193,7 +9280,7 @@ main:focus{outline:none}
     function addRoom(key, x1, z1, x2, z2, label, pose){
       ROOMS.push({ key: key, x1: x1, z1: z1, x2: x2, z2: z2, label: label, pose: pose || null });
     }
-    addRoom('GREAT',   -6,   -8,    8,    6,     'Living');
+    addRoom('GREAT',   -6,   -8,    8,    6,     'Living',   { x: 1.8, z: -0.8, yaw: PI, pitch: 0, vfov: 66 });   /* stands between the sofas and the dining table, facing the terrace glass; the computed corner view sat behind the plants */
     addRoom('KITCHEN',  8,   -2,    16,   6,     'Kitchen');
     addRoom('EHALL',    8,   -14,   11,   -2,    'Hallway');
     addRoom('BR3',      11,  -14,   17,   -8,    'Bedroom');
@@ -9581,12 +9668,14 @@ main:focus{outline:none}
       tagLayer.appendChild(b);
       p.tag = b;
     });
+    var tagSafeY = 99999, tagSafeN = 0;
     function updateTags(){
       var show = (MODE !== 'aerial') && !doorGlide && !!walkRoom;
       tagLayer.classList.toggle('on', show);
       if(!show) return;
       camera.updateMatrixWorld();
       var W = el.clientWidth, H = el.clientHeight;
+      if((tagSafeN++ % 20) === 0){ var lw = tourEl.querySelector('.tour-lower'); tagSafeY = lw ? lw.getBoundingClientRect().top - el.getBoundingClientRect().top - 26 : H - 80; }
       var edgeCount = { '-1': 0, '1': 0 };
       PORTALS.forEach(function(p){
         var other = p.a === walkRoom ? p.b : (p.b === walkRoom ? p.a : null);
@@ -9614,7 +9703,8 @@ main:focus{outline:none}
         p.tag.classList.toggle('edge', edge);
         if(p.tag.textContent !== label) p.tag.textContent = label;
         p.tag.hidden = false;
-        p.tag.style.transform = 'translate(' + ((nx * 0.5 + 0.5) * W).toFixed(1) + 'px,' + ((-ny * 0.5 + 0.5) * H).toFixed(1) + 'px) translate(-50%,-50%)';
+        var tpy = (-ny * 0.5 + 0.5) * H; if(tpy > tagSafeY) tpy = tagSafeY;     /* never over the bottom bar */
+        p.tag.style.transform = 'translate(' + ((nx * 0.5 + 0.5) * W).toFixed(1) + 'px,' + tpy.toFixed(1) + 'px) translate(-50%,-50%)';
       });
     }
     function smooth(k){ return k * k * (3 - 2 * k); }
@@ -10008,15 +10098,15 @@ main:focus{outline:none}
             '  vec3 c = col.rgb * mix(aoK, 1.0, 0.6 * smoothstep(0.70, 0.95, dot(col.rgb, vec3(0.2126, 0.7152, 0.0722))));',
             '  c = 1.0 - (1.0 - c) * (1.0 - clamp(texture2D(tGlow, vUv).rgb * glowK, 0.0, 1.0));',
             '  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));',
-            '  c = mix(c, c * c * (3.0 - 2.0 * c), 0.32);',
-            '  c = mix(vec3(l), c, 1.07);',
+            '  c = mix(c, c * c * (3.0 - 2.0 * c), 0.42);',
+            '  c = mix(vec3(l), c, 1.15);',
             /* chromatic restraint: turf under a tropical sun photographs
                close to lime; a magazine grade takes the edge off the greens
                and leaves every other colour alone */
             '  c = mix(c, vec3(l), 0.28 * clamp((c.g - max(c.r, c.b)) * 4.0, 0.0, 1.0));',
-            '  c *= mix(vec3(0.97, 0.99, 1.03), vec3(1.03, 1.0, 0.95), smoothstep(0.1, 0.9, l));',
+            '  c *= mix(vec3(0.96, 0.99, 1.04), vec3(1.04, 1.0, 0.94), smoothstep(0.1, 0.9, l));',
             '  vec2 q = (vUv - 0.5) * vec2(aspect, 1.0);',
-            '  c *= 1.0 - 0.20 * dot(q, q);',
+            '  c *= 1.0 - 0.25 * dot(q, q);',
             '  gl_FragColor = vec4(clamp(c, 0.0, 1.0), col.a);',
             '}'].join('\n'),
           depthTest: false, depthWrite: false
@@ -10192,7 +10282,9 @@ main:focus{outline:none}
       if(mirrorsLive && !mirrorsOff && frameN > 60 && frameAvg > 28) mirrorsOff = true;   /* under ~36 fps with a live mirror in view: drop the reflection first */
       if(++frameN < 60 || quality === 0) return;
       if(frameAvg < 19.5) return;
+      if(lowPower && frameAvg < 26) return;                           /* a phone holding about 40 fps or better keeps full sharpness */
       frameN = 0;
+      if(lowPower && resScale < 0.9 && frameAvg < 33) return;          /* and only drops to 72% when it is really struggling */
       if(resScale > 0.73){
         resScale = resScale > 0.9 ? 0.85 : 0.72;
         renderer.setPixelRatio(baseRatio * resScale);
@@ -10619,7 +10711,7 @@ main:focus{outline:none}
     var LAMP_BAKE = 4.0, FILL_UP = lowPower ? 0.0 : 0.3;
     /* rooms with dark finishes or no window get a little more of the
        photographer's fill than the formula alone gives */
-    var GI_LIFT = { GREAT: 1.4, FOYER: 2.6, PBATH: 1.5, EHALL: 1.15, WHALL: 1.1, POWDER: 1.3, PCLOSET: 1.3, POOLBATH: 0.75, BR2BATH: 1.5, BR3BATH: 1.2, BR4BATH: 1.2 };
+    var GI_LIFT = { GREAT: 1.4, FOYER: 2.6, PBATH: 2.4, EHALL: 1.15, WHALL: 1.1, POWDER: 1.3, PCLOSET: 1.3, POOLBATH: 0.75, BR2BATH: 1.5, BR3BATH: 1.2, BR4BATH: 1.2 };
     function giBuild(pr, final){
       var N = GI_N, W2 = 2 * N, data = GIU.giAtlas.value.image.data, toHalf = T.DataUtils.toHalfFloat;
       /* The photographer's fill. An interior shoot lights a dark room so it
@@ -10838,6 +10930,7 @@ main:focus{outline:none}
   function openTour(fromEl){
     if(!tourEl || tourIsOpen) return;
     tourIsOpen = true;
+    if(window.__ldreRotateSync) window.__ldreRotateSync();
     tourReturnTo = fromEl || null;
     tourEl.classList.add('on');
     tourEl.setAttribute('aria-hidden', 'false');
@@ -10877,6 +10970,7 @@ main:focus{outline:none}
   function closeTour(){
     if(!tourIsOpen) return;
     tourIsOpen = false;
+    if(window.__ldreRotateSync) window.__ldreRotateSync();
     if(tourView) tourView.stop();
     tourEl.classList.remove('on');
     tourEl.setAttribute('aria-hidden', 'true');
@@ -11061,7 +11155,7 @@ main:focus{outline:none}
     if(roomsGal) roomsGal.classList.remove('on');
     hdr.classList.toggle('dark',!!arrival);
     hdr.classList.toggle('light',!arrival);
-    watchContext(); watchAll(); watchIndex(); onScroll();
+    watchContext(); watchAll(); watchIndex(); onScroll(); updateIdxArrows(false);
   }
   wirePropertyCards();
   wireJournalLinks();
